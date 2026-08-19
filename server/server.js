@@ -80,6 +80,58 @@ function checkYtDlp() {
     }
 }
 
+// Get the currently installed yt-dlp version (or null if not installed)
+function getYtDlpVersion() {
+    try {
+        return execSync('yt-dlp --version', { stdio: 'pipe' }).toString().trim();
+    } catch (error) {
+        return null;
+    }
+}
+
+// Update yt-dlp to the latest version. Tries pip3 first, falls back to pip.
+// This matches how setup.sh installs yt-dlp, so `yt-dlp -U` (which fails
+// for pip/PyPI installs) is intentionally not used here.
+function updateYtDlp() {
+    return new Promise((resolve) => {
+        const beforeVersion = getYtDlpVersion();
+
+        const runPip = (pipCmd) => new Promise((res) => {
+            const updater = spawn(pipCmd, ['install', '-U', 'yt-dlp'], { shell: true });
+            let output = '';
+            updater.stdout.on('data', (d) => output += d.toString());
+            updater.stderr.on('data', (d) => output += d.toString());
+            updater.on('error', () => res({ code: 1, output }));
+            updater.on('close', (code) => res({ code, output }));
+        });
+
+        runPip('pip3').then((result) => {
+            if (result.code === 0) {
+                const afterVersion = getYtDlpVersion();
+                resolve({
+                    success: !!afterVersion,
+                    beforeVersion,
+                    afterVersion,
+                    updated: !!afterVersion && afterVersion !== beforeVersion,
+                    output: result.output
+                });
+                return;
+            }
+            // pip3 failed or isn't available — fall back to pip
+            runPip('pip').then((fallback) => {
+                const afterVersion = getYtDlpVersion();
+                resolve({
+                    success: !!afterVersion,
+                    beforeVersion,
+                    afterVersion,
+                    updated: !!afterVersion && afterVersion !== beforeVersion,
+                    output: result.output + '\n' + fallback.output
+                });
+            });
+        });
+    });
+}
+
 // Extract channel ID from URL
 function extractChannelId(url) {
     const patterns = [
@@ -104,7 +156,7 @@ function extractChannelId(url) {
 // Fetch channel info using yt-dlp
 function fetchChannelInfo(channelId, channelUrl) {
     return new Promise((resolve, reject) => {
-        const cmd = 'yt-dlp --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "' + channelUrl + '"';
+        const cmd = 'yt-dlp --js-runtimes node --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "' + channelUrl + '"';
         
         exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
             if (error) {
@@ -214,6 +266,25 @@ app.get('/api/health', function(req, res) {
         downloadsDir: DOWNLOADS_DIR,
         downloadMode: currentDownloadMode
     });
+});
+
+// Get current yt-dlp version
+app.get('/api/ytdlp/version', function(req, res) {
+    const version = getYtDlpVersion();
+    res.json({
+        installed: !!version,
+        version: version
+    });
+});
+
+// Manually trigger a yt-dlp update (pip3/pip install -U yt-dlp)
+app.post('/api/ytdlp/update', async function(req, res) {
+    try {
+        const result = await updateYtDlp();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ success: false, message: error.message });
+    }
 });
 
 // Get/Update settings
@@ -541,7 +612,7 @@ function executeDownload(reqBody, res, jobId) {
     const outputTemplate = path.join(finalPath, safeTitle + '.%(ext)s');
     
     // Build yt-dlp command
-    var command = 'yt-dlp -o "' + outputTemplate + '"';
+    var command = 'yt-dlp --js-runtimes node -o "' + outputTemplate + '"';
     
     // Add quality/format options
     if (format === 'mp3' || format === 'm4a') {
@@ -869,6 +940,22 @@ cron.schedule('*/5 * * * *', function() {
     });
 });
 
+// Daily auto-update of yt-dlp (runs once every day at 3:00 AM server time)
+cron.schedule('0 3 * * *', function() {
+    console.log('Running scheduled yt-dlp update check...');
+    updateYtDlp().then(function(result) {
+        if (result.updated) {
+            console.log('✅ yt-dlp updated: ' + result.beforeVersion + ' → ' + result.afterVersion);
+        } else if (result.success) {
+            console.log('yt-dlp already up to date (' + result.afterVersion + ')');
+        } else {
+            console.error('⚠️  yt-dlp auto-update failed. Update manually with: pip install -U yt-dlp');
+        }
+    }).catch(function(error) {
+        console.error('⚠️  yt-dlp auto-update error:', error.message);
+    });
+});
+
 // Serve the HTML frontend
 app.get('/', function(req, res) {
     const htmlPath = path.join(__dirname, '../public/index.html');
@@ -904,5 +991,18 @@ app.listen(PORT, function() {
         console.log('   Or: brew install yt-dlp (macOS)');
         console.log('   Or: sudo apt install yt-dlp (Ubuntu)');
         console.log('');
+    } else {
+        console.log('🔄 Checking for yt-dlp updates...');
+        updateYtDlp().then(function(result) {
+            if (result.updated) {
+                console.log('✅ yt-dlp updated: ' + result.beforeVersion + ' → ' + result.afterVersion);
+            } else if (result.success) {
+                console.log('✅ yt-dlp is up to date (' + result.afterVersion + ')');
+            } else {
+                console.error('⚠️  yt-dlp auto-update failed. Update manually with: pip install -U yt-dlp');
+            }
+        }).catch(function(error) {
+            console.error('⚠️  yt-dlp auto-update error:', error.message);
+        });
     }
 });
