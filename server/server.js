@@ -740,20 +740,28 @@ async function executeDownload(reqBody, res, jobId) {
         analyzingJob.speed = '';
         
         // STEP 2: Build yt-dlp command with detected format
-        var command = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github';
+        // Using ONLY essential, proven-to-work flags
+        var command = 'yt-dlp';
         
-        // Add the auto-detected format (lowest quality MP4)
+        // Essential flags only (no experimental/problematic ones)
+        command += ' --no-check-certificate';           // Skip SSL verification issues
+        command += ' --cookies-from-browser edge';       // Use browser cookies for login
+        command += ' --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"';  // Standard browser UA
+        
+        // Add the auto-detected format (format 18 = pre-merged 360p MP4 with audio)
         command += ' -f "' + formatString + '"';
         
-        // Force MP4 output
-        command += ' --merge-output-format mp4';
+        // Only add merge flag if format string contains "+" (video+audio merge needed)
+        if (formatString.includes('+')) {
+            command += ' --merge-output-format mp4';
+        }
         
         // Add output template
         command += ' -o "' + outputTemplate + '"';
 
-        command += ' https://www.youtube.com/watch?v=' + videoId;
+        command += ' "https://www.youtube.com/watch?v=' + videoId + '"';
         
-        console.log('[Download] Final command prepared');
+        console.log('[Download] Final command:', command);
         
         // Start download process
         const downloadJob = {
