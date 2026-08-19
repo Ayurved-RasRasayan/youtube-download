@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const { execSync, exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -17,7 +18,7 @@ app.use('/downloads', express.static(path.join(__dirname, '../downloads')));
 
 // Data storage
 const DATA_FILE = path.join(__dirname, 'data.json');
-const DEFAULT_DOWNLOADS_DIR = path.join(__dirname, '../downloads');
+const DEFAULT_DOWNLOADS_DIR = path.join(os.homedir(), 'Downloads', 'YouTube Channel Downloader');
 let DOWNLOADS_DIR = DEFAULT_DOWNLOADS_DIR;
 
 // Download queue for sequential mode
