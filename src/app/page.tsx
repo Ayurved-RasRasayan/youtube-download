@@ -9,390 +9,431 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
+import { Input } from '@/components/ui/input';
 import { 
   Download, 
   Film, 
   Radio, 
   CheckSquare, 
-  Square, 
   Loader2,
   FolderOpen,
   ExternalLink,
   FileVideo,
-  FileAudio
+  FileAudio,
+  Plus,
+  RefreshCw,
+  Settings,
+  Trash2,
+  Wifi,
+  WifiOff,
+  Search,
+  Clock,
+  Eye
 } from 'lucide-react';
 
-interface VideoFile {
-  name: string;
-  downloadUrl: string;
-  size?: string;
-  type: string;
+// Types matching Express backend API
+interface Video {
+  id: string;
+  title: string;
+  duration: string;
+  views: string;
+  viewCount: number;
+  publishedAt: string;
+  isLive: boolean;
+  isNew: boolean;
+  url: string;
+  thumbnail: string;
 }
 
-interface DownloadState {
-  [key: string]: 'idle' | 'downloading' | 'completed' | 'error';
+interface Channel {
+  id: string;
+  name: string;
+  url: string;
+  avatar: string;
+  videos: Video[];
+  liveVideos: Video[];
+  lastChecked: string;
+  newVideoCount: number;
+}
+
+interface DownloadJob {
+  id: string;
+  videoId: string;
+  title: string;
+  status: 'pending' | 'downloading' | 'completed' | 'error' | 'cancelled';
+  progress: number;
+  speed?: string;
+  eta?: string;
+  error?: string;
+}
+
+interface ServerHealth {
+  status: string;
+  ytDlpInstalled: boolean;
+  channels: number;
+  activeDownloads: number;
+  downloadsDir: string;
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<'videos' | 'live'>('videos');
-  const [videos, setVideos] = useState<VideoFile[]>([]);
-  const [liveStreams, setLiveStreams] = useState<VideoFile[]>([]);
+  // State management
+  const [channels, setChannels] = useState<Channel[]>([]);
+  const [activeChannel, setActiveChannel] = useState<Channel | null>(null);
+  const [channelInput, setChannelInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [serverHealth, setServerHealth] = useState<ServerHealth | null>(null);
+  const [isOnline, setIsOnline] = useState(false);
+  
+  // Selection state
   const [selectedVideos, setSelectedVideos] = useState<Set<string>>(new Set());
   const [selectedLive, setSelectedLive] = useState<Set<string>>(new Set());
-  const [loading, setLoading] = useState<{ videos: boolean; live: boolean }>({
-    videos: true,
-    live: true
-  });
-  const [downloadStates, setDownloadStates] = useState<DownloadState>({});
-  const [batchProgress, setBatchProgress] = useState<number>(0);
+  
+  // Download state
+  const [downloads, setDownloads] = useState<DownloadJob[]>([]);
+  const [batchProgress, setBatchProgress] = useState(0);
   const [isBatchDownloading, setIsBatchDownloading] = useState(false);
-  const [dataSource, setDataSource] = useState<{ videos: string; live: string }>({
-    videos: 'loading',
-    live: 'loading'
-  });
 
-  // Fetch videos from API
-  const fetchVideos = useCallback(async () => {
-    setLoading(prev => ({ ...prev, videos: true }));
-    try {
-      const response = await fetch('/api/videos');
-      const data = await response.json();
-      if (data.success) {
-        setVideos(data.videos);
-        setDataSource(prev => ({ ...prev, videos: data.source || 'repository' }));
-      }
-    } catch (error) {
-      console.error('Error fetching videos:', error);
-    } finally {
-      setLoading(prev => ({ ...prev, videos: false }));
-    }
-  }, []);
-
-  // Fetch live streams from API
-  const fetchLiveStreams = useCallback(async () => {
-    setLoading(prev => ({ ...prev, live: true }));
-    try {
-      const response = await fetch('/api/live');
-      const data = await response.json();
-      if (data.success) {
-        setLiveStreams(data.videos);
-        setDataSource(prev => ({ ...prev, live: data.source || 'repository' }));
-      }
-    } catch (error) {
-      console.error('Error fetching live streams:', error);
-    } finally {
-      setLoading(prev => ({ ...prev, live: false }));
-    }
-  }, []);
-
-  // Load data on mount
+  // Check server health on mount
   useEffect(() => {
-    fetchVideos();
-    fetchLiveStreams();
-  }, [fetchVideos, fetchLiveStreams]);
+    checkServerHealth();
+    const interval = setInterval(checkServerHealth, 30000); // Every 30s
+    return () => clearInterval(interval);
+  }, []);
 
-  // Toggle file selection
-  const toggleSelection = (fileName: string, type: 'videos' | 'live') => {
-    if (type === 'videos') {
-      setSelectedVideos(prev => {
-        const newSet = new Set(prev);
-        if (newSet.has(fileName)) {
-          newSet.delete(fileName);
-        } else {
-          newSet.add(fileName);
-        }
-        return newSet;
-      });
-    } else {
-      setSelectedLive(prev => {
-        const newSet = new Set(prev);
-        if (newSet.has(fileName)) {
-          newSet.delete(fileName);
-        } else {
-          newSet.add(fileName);
-        }
-        return newSet;
-      });
+  // Poll for download updates
+  useEffect(() => {
+    if (downloads.some(d => d.status === 'downloading')) {
+      const interval = setInterval(fetchDownloads, 2000);
+      return () => clearInterval(interval);
     }
-  };
+  }, [downloads]);
 
-  // Select all files
-  const selectAll = (type: 'videos' | 'live') => {
-    const fileList = type === 'videos' ? videos : liveStreams;
-    if (type === 'videos') {
-      setSelectedVideos(new Set(fileList.map(f => f.name)));
-    } else {
-      setSelectedLive(new Set(fileList.map(f => f.name)));
-    }
-  };
-
-  // Deselect all files
-  const deselectAll = (type: 'videos' | 'live') => {
-    if (type === 'videos') {
-      setSelectedVideos(new Set());
-    } else {
-      setSelectedLive(new Set());
-    }
-  };
-
-  // Download single file
-  const downloadSingle = async (file: VideoFile, folder: string) => {
-    setDownloadStates(prev => ({ ...prev, [file.name]: 'downloading' }));
-    
+  const checkServerHealth = async () => {
     try {
-      // Create a temporary anchor element to trigger download
-      const link = document.createElement('a');
-      link.href = file.downloadUrl;
-      link.download = file.name;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
+      const res = await fetch('/api/health');
+      if (res.ok) {
+        const data = await res.json();
+        setServerHealth(data);
+        setIsOnline(true);
+      } else {
+        setIsOnline(false);
+      }
+    } catch (error) {
+      console.error('Health check failed:', error);
+      setIsOnline(false);
+    }
+  };
+
+  const fetchDownloads = async () => {
+    try {
+      const res = await fetch('/api/downloads');
+      if (res.ok) {
+        const data = await res.json();
+        setDownloads(data.downloads || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch downloads:', error);
+    }
+  };
+
+  // Add channel
+  const addChannel = async () => {
+    if (!channelInput.trim()) return;
+    
+    setLoading(true);
+    try {
+      const res = await fetch('/api/channels', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: channelInput.trim() })
+      });
       
-      // Trigger download
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      if (res.ok) {
+        const newChannel = await res.json();
+        setChannels(prev => [...prev, newChannel]);
+        setActiveChannel(newChannel);
+        setChannelInput('');
+      } else {
+        const error = await res.json();
+        alert(error.error || 'Failed to add channel');
+      }
+    } catch (error) {
+      alert('Error adding channel: ' + (error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Refresh channel
+  const refreshChannel = async (channelId: string) => {
+    try {
+      const res = await fetch(`/api/channels/${channelId}/refresh`, {
+        method: 'POST'
+      });
       
-      // Simulate completion after a short delay
-      setTimeout(() => {
-        setDownloadStates(prev => ({ ...prev, [file.name]: 'completed' }));
-        setTimeout(() => {
-          setDownloadStates(prev => ({ ...prev, [file.name]: 'idle' }));
-        }, 2000);
-      }, 1000);
+      if (res.ok) {
+        const updatedChannel = await res.json();
+        setChannels(prev => prev.map(c => c.id === channelId ? updatedChannel : c));
+        if (activeChannel?.id === channelId) {
+          setActiveChannel(updatedChannel);
+        }
+      }
+    } catch (error) {
+      console.error('Refresh failed:', error);
+    }
+  };
+
+  // Delete channel
+  const deleteChannel = async (channelId: string) => {
+    try {
+      await fetch(`/api/channels/${channelId}`, { method: 'DELETE' });
+      setChannels(prev => prev.filter(c => c.id !== channelId));
+      if (activeChannel?.id === channelId) {
+        setActiveChannel(null);
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+    }
+  };
+
+  // Download single video
+  const downloadVideo = async (video: Video, isLive: boolean = false) => {
+    if (!activeChannel) return;
+
+    try {
+      const res = await fetch('/api/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          videoId: video.id,
+          title: video.title,
+          channelId: activeChannel.id,
+          quality: 'best',
+          format: 'mp4'
+        })
+      });
+
+      if (res.ok) {
+        const job = await res.json();
+        setDownloads(prev => [...prev, job]);
+        // Start polling
+        fetchDownloads();
+      }
     } catch (error) {
       console.error('Download failed:', error);
-      setDownloadStates(prev => ({ ...prev, [file.name]: 'error' }));
-      setTimeout(() => {
-        setDownloadStates(prev => ({ ...prev, [file.name]: 'idle' }));
-      }, 3000);
     }
   };
 
-  // Batch download selected files
-  const batchDownload = async (type: 'videos' | 'live') => {
-    const selectedFiles = type === 'videos' ? selectedVideos : selectedLive;
-    const fileList = type === 'videos' ? videos : liveStreams;
-    
-    if (selectedFiles.size === 0) return;
+  // Batch download selected videos
+  const batchDownload = async (videos: Video[], isLive: boolean = false) => {
+    const selected = isLive ? selectedLive : selectedVideos;
+    if (selected.size === 0 || !activeChannel) return;
 
     setIsBatchDownloading(true);
     setBatchProgress(0);
 
-    const filesToDownload = fileList.filter(f => selectedFiles.has(f.name));
-    let completed = 0;
-
-    for (const file of filesToDownload) {
-      setDownloadStates(prev => ({ ...prev, [file.name]: 'downloading' }));
-      
-      try {
-        // Create download link
-        const link = document.createElement('a');
-        link.href = file.downloadUrl;
-        link.download = file.name;
-        link.target = '_blank';
-        link.rel = 'noopener noreferrer';
-        
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        setDownloadStates(prev => ({ ...prev, [file.name]: 'completed' }));
-      } catch (error) {
-        console.error(`Failed to download ${file.name}:`, error);
-        setDownloadStates(prev => ({ ...prev, [file.name]: 'error' }));
-      }
-
-      completed++;
-      setBatchProgress((completed / filesToDownload.length) * 100);
-      
-      // Small delay between downloads to prevent browser blocking
-      await new Promise(resolve => setTimeout(resolve, 500));
+    const videosToDownload = videos.filter(v => selected.has(v.id));
+    
+    for (let i = 0; i < videosToDownload.length; i++) {
+      await downloadVideo(videosToDownload[i], isLive);
+      setBatchProgress(((i + 1) / videosToDownload.length) * 100);
+      await new Promise(r => setTimeout(r, 500)); // Delay between downloads
     }
 
     setIsBatchDownloading(false);
-    
-    // Reset states after completion
     setTimeout(() => {
-      setDownloadStates({});
       setBatchProgress(0);
-      if (type === 'videos') {
-        setSelectedVideos(new Set());
-      } else {
-        setSelectedLive(new Set());
-      }
+      if (isLive) setSelectedLive(new Set());
+      else setSelectedVideos(new Set());
     }, 3000);
   };
 
-  // Get file icon based on type
-  const getFileIcon = (type: string) => {
-    switch (type) {
-      case 'video':
-        return <FileVideo className="h-4 w-4 text-red-500" />;
-      case 'audio':
-        return <FileAudio className="h-4 w-4 text-green-500" />;
-      default:
-        return <FolderOpen className="h-4 w-4 text-blue-500" />;
+  // Toggle selection
+  const toggleSelection = (videoId: string, isLive: boolean) => {
+    if (isLive) {
+      setSelectedLive(prev => {
+        const next = new Set(prev);
+        if (next.has(videoId)) next.delete(videoId);
+        else next.add(videoId);
+        return next;
+      });
+    } else {
+      setSelectedVideos(prev => {
+        const next = new Set(prev);
+        if (next.has(videoId)) next.delete(videoId);
+        else next.add(videoId);
+        return next;
+      });
     }
   };
 
-  // Get download status badge
-  const getStatusBadge = (fileName: string) => {
-    const state = downloadStates[fileName];
-    switch (state) {
-      case 'downloading':
-        return <Badge variant="secondary" className="bg-blue-100 text-blue-700"><Loader2 className="h-3 w-3 animate-spin mr-1" />Downloading</Badge>;
-      case 'completed':
-        return <Badge variant="secondary" className="bg-green-100 text-green-700"><CheckSquare className="h-3 w-3 mr-1" />Done</Badge>;
-      case 'error':
-        return <Badge variant="destructive">Error</Badge>;
-      default:
-        return null;
-    }
+  // Select all
+  const selectAll = (videos: Video[], isLive: boolean) => {
+    if (isLive) setSelectedLive(new Set(videos.map(v => v.id)));
+    else setSelectedVideos(new Set(videos.map(v => v.id)));
   };
 
-  // Render file list
-  const renderFileList = (
-    files: VideoFile[], 
-    type: 'videos' | 'live', 
-    selected: Set<string>,
-    onSelect: (name: string) => void
-  ) => {
-    if (loading[type]) {
+  // Get download status for a video
+  const getDownloadStatus = (videoId: string): DownloadJob | undefined => {
+    return downloads.find(d => d.videoId === videoId);
+  };
+
+  // Render video list
+  const renderVideoList = (videos: Video[], isLive: boolean, selected: Set<string>) => {
+    if (!activeChannel) {
       return (
-        <div className="flex flex-col items-center justify-center py-12">
-          <Loader2 className="h-8 w-8 animate-spin text-primary mb-4" />
-          <p className="text-muted-foreground">Loading {type}...</p>
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+          <Search className="h-12 w-12 mb-4 opacity-50" />
+          <p className="text-lg font-medium">No Channel Selected</p>
+          <p className="text-sm mt-2">Add a YouTube channel above to get started</p>
         </div>
       );
     }
 
-    if (files.length === 0) {
+    if (videos.length === 0) {
       return (
-        <div className="flex flex-col items-center justify-center py-12">
-          <FolderOpen className="h-12 w-12 text-muted-foreground mb-4" />
-          <p className="text-lg font-medium text-muted-foreground">No files found</p>
-          <p className="text-sm text-muted-foreground mt-2">
-            No {type} available in this repository
-          </p>
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+          <FolderOpen className="h-12 w-12 mb-4 opacity-50" />
+          <p className="text-lg font-medium">No {isLive ? 'Live Streams' : 'Videos'} Found</p>
+          <p className="text-sm mt-2">This channel has no {isLive ? 'live streams' : 'videos'} yet</p>
         </div>
       );
     }
 
     return (
-      <div className="space-y-2">
+      <div className="space-y-3">
         {/* Selection controls */}
-        <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg mb-4">
-          <div className="flex items-center gap-2">
-            <Checkbox
-              checked={selected.size === files.length && files.length > 0}
-              onCheckedChange={(checked) => {
-                if (checked) selectAll(type);
-                else deselectAll(type);
-              }}
-            />
-            <span className="text-sm font-medium">
-              Select All ({selected.size}/{files.length})
-            </span>
-          </div>
+        <div className="flex items-center gap-4 p-3 bg-muted/50 rounded-lg">
+          <Checkbox
+            checked={selected.size === videos.length && videos.length > 0}
+            onCheckedChange={(checked) => checked && selectAll(videos, isLive)}
+          />
+          <span className="text-sm font-medium">
+            Select All ({selected.size}/{videos.length})
+          </span>
           
           <Button
             size="sm"
             disabled={selected.size === 0 || isBatchDownloading}
-            onClick={() => batchDownload(type)}
+            onClick={() => batchDownload(videos, isLive)}
             className="ml-auto"
           >
             {isBatchDownloading ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Downloading...
-              </>
+              <><Loader2 className="h-4 w-4 mr-2 animate-spin />Downloading...</>
             ) : (
-              <>
-                <Download className="h-4 w-4 mr-2" />
-                Download Selected ({selected.size})
-              </>
+              <><Download className="h-4 w-4 mr-2" />Download Selected ({selected.size})</>
             )}
           </Button>
         </div>
 
         {/* Batch progress */}
         {isBatchDownloading && (
-          <div className="mb-4">
-            <Progress value={batchProgress} className="h-2" />
-            <p className="text-xs text-muted-foreground mt-1 text-center">
-              {Math.round(batchProgress)}% complete
-            </p>
-          </div>
+          <Progress value={batchProgress} className="h-2" />
         )}
 
-        {/* File list */}
-        <ScrollArea className="max-h-[500px] rounded-md border">
-          <div className="p-2">
-            {files.map((file) => (
-              <div
-                key={file.name}
-                className={`flex items-center gap-3 p-3 rounded-lg hover:bg-muted/50 transition-colors ${
-                  selected.has(file.name) ? 'bg-primary/5 border border-primary/20' : ''
-                }`}
-              >
-                {/* Checkbox */}
-                <Checkbox
-                  checked={selected.has(file.name)}
-                  onCheckedChange={() => toggleSelection(file.name, type)}
-                />
+        {/* Video cards */}
+        <ScrollArea className="max-h-[600px] rounded-md border">
+          <div className="p-3 space-y-3">
+            {videos.map((video) => {
+              const download = getDownloadStatus(video.id);
+              const isSelected = selected.has(video.id);
+              
+              return (
+                <div
+                  key={video.id}
+                  className={`flex gap-4 p-4 rounded-lg border transition-all hover:bg-muted/50 ${
+                    isSelected ? 'bg-primary/5 border-primary/30' : 'bg-card'
+                  }`}
+                >
+                  {/* Thumbnail */}
+                  <div className="relative flex-shrink-0 w-32 h-20 rounded-md overflow-hidden bg-muted">
+                    <img
+                      src={video.thumbnail}
+                      alt={video.title}
+                      className="w-full h-full object-cover"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/placeholder.png';
+                      }}
+                    />
+                    {video.isNew && (
+                      <Badge className="absolute top-1 left-1 text-xs bg-red-500">NEW</Badge>
+                    )}
+                    <span className="absolute bottom-1 right-1 text-xs bg-black/80 px-1 rounded">
+                      {video.duration}
+                    </span>
+                  </div>
 
-                {/* File icon and info */}
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  {getFileIcon(file.type)}
+                  {/* Info */}
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium truncate text-sm">{file.name}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      {file.size && (
-                        <span className="text-xs text-muted-foreground">{file.size}</span>
-                      )}
-                      <Badge variant="outline" className="text-xs">
-                        {file.type.toUpperCase()}
-                      </Badge>
+                    <div className="flex items-start gap-2">
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleSelection(video.id, isLive)}
+                        className="mt-1"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium text-sm line-clamp-2">{video.title}</h4>
+                        <div className="flex items-center gap-3 mt-1.5 text-xs text-muted-foreground">
+                          <span className="flex items-center gap-1">
+                            <Eye className="h-3 w-3" />{video.views}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {new Date(video.publishedAt).toLocaleDateString()}
+                          </span>
+                          {video.isLive && (
+                            <Badge variant="outline" className="text-xs text-red-500">LIVE</Badge>
+                          )}
+                        </div>
+                        
+                        {/* Download progress */}
+                        {download?.status === 'downloading' && (
+                          <div className="mt-2 space-y-1">
+                            <Progress value={download.progress} className="h-1.5" />
+                            <p className="text-xs text-muted-foreground">
+                              {download.progress}% • {download.speed || ''} {download.eta ? `• ETA: ${download.eta}` : ''}
+                            </p>
+                          </div>
+                        )}
+                        
+                        {download?.status === 'completed' && (
+                          <Badge variant="secondary" className="mt-2 bg-green-100 text-green-700">
+                            <CheckSquare className="h-3 w-3 mr-1" />Completed
+                          </Badge>
+                        )}
+                        
+                        {download?.status === 'error' && (
+                          <Badge variant="destructive" className="mt-2">
+                            Error: {download.error}
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </div>
+
+                  {/* Actions */}
+                  <div className="flex flex-col gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => downloadVideo(video, isLive)}
+                      disabled={download?.status === 'downloading'}
+                    >
+                      {download?.status === 'downloading' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Download className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <Button size="sm" variant="ghost" asChild>
+                      <a href={video.url} target="_blank" rel="noopener noreferrer">
+                        <ExternalLink className="h-4 w-4" />
+                      </a>
+                    </Button>
+                  </div>
                 </div>
-
-                {/* Status badge */}
-                <div className="mr-2">
-                  {getStatusBadge(file.name)}
-                </div>
-
-                {/* Download button */}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => downloadSingle(file, type)}
-                  disabled={downloadStates[file.name] === 'downloading'}
-                >
-                  {downloadStates[file.name] === 'downloading' ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Download className="h-4 w-4" />
-                  )}
-                </Button>
-
-                {/* External link */}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  asChild
-                >
-                  <a
-                    href={file.downloadUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title="Open in new tab"
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                  </a>
-                </Button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </ScrollArea>
       </div>
@@ -402,168 +443,246 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b bg-card">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center gap-4">
+      <header className="border-b bg-card sticky top-0 z-50">
+        <div className="container mx-auto px-4 py-4">
+          <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-primary/10 rounded-lg">
                 <Film className="h-6 w-6 text-primary" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold">YouTube Download Browser</h1>
-                <p className="text-sm text-muted-foreground">
-                  Browse and download videos from Ayurved-RasRasayan/youtube-download repository
+                <h1 className="text-xl font-bold">YouTube Downloader</h1>
+                <p className="text-xs text-muted-foreground">
+                  {isOnline ? (
+                    <span className="flex items-center gap-1 text-green-600">
+                      <Wifi className="h-3 w-3" /> Connected to server
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-red-500">
+                      <WifiOff className="h-3 w-3" /> Server offline
+                    </span>
+                  )}
                 </p>
               </div>
             </div>
+            
+            {serverHealth && (
+              <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                <span>{serverHealth.channels} channels</span>
+                <span>{serverHealth.activeDownloads} downloading</span>
+                <Badge variant={serverHealth.ytDlpInstalled ? "secondary" : "destructive"}>
+                  yt-dlp: {serverHealth.ytDlpInstalled ? '✓' : '✗'}
+                </Badge>
+              </div>
+            )}
           </div>
         </div>
       </header>
 
-      {/* Main content */}
-      <main className="container mx-auto px-4 py-8">
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'videos' | 'live')}>
-          <TabsList className="grid w-full max-w-md mx-auto grid-cols-2">
-            <TabsTrigger value="videos" className="flex items-center gap-2">
-              <Film className="h-4 w-4" />
-              Videos
-              {videos.length > 0 && (
-                <Badge variant="secondary" className="ml-1">{videos.length}</Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="live" className="flex items-center gap-2">
-              <Radio className="h-4 w-4" />
-              Live Streams
-              {liveStreams.length > 0 && (
-                <Badge variant="secondary" className="ml-1">{liveStreams.length}</Badge>
-              )}
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="videos" className="mt-6">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <Film className="h-5 w-5 text-red-500" />
-                    Videos Folder
-                    {dataSource.videos === 'sample' && (
-                      <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-700 border-amber-200">
-                        Sample Data
-                      </Badge>
-                    )}
-                  </CardTitle>
-                  <Badge variant="secondary">{videos.length} files</Badge>
-                </div>
-                <CardDescription>
-                  Browse and download video files from the repository&apos;s videos directory.
-                  Files will be saved to your default Downloads folder.
-                  {dataSource.videos === 'sample' && (
-                    <span className="block mt-2 text-xs text-amber-600 bg-amber-50 p-2 rounded">
-                      Showing sample data - the videos folder may not exist in the repository yet.
-                    </span>
-                  )}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {renderFileList(videos, 'videos', selectedVideos, (name) => toggleSelection(name, 'videos'))}
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="live" className="mt-6">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <CardTitle className="flex items-center gap-2">
-                    <Radio className="h-5 w-5 text-red-500" />
-                    Live Streams Folder
-                    {dataSource.live === 'sample' && (
-                      <Badge variant="outline" className="ml-2 bg-amber-50 text-amber-700 border-amber-200">
-                        Sample Data
-                      </Badge>
-                    )}
-                  </CardTitle>
-                  <Badge variant="secondary">{liveStreams.length} files</Badge>
-                </div>
-                <CardDescription>
-                  Browse and download live stream recordings from the repository&apos;s live directory.
-                  Files will be saved to your default Downloads folder.
-                  {dataSource.live === 'sample' && (
-                    <span className="block mt-2 text-xs text-amber-600 bg-amber-50 p-2 rounded">
-                      Showing sample data - the live folder may not exist in the repository yet.
-                    </span>
-                  )}
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                {renderFileList(liveStreams, 'live', selectedLive, (name) => toggleSelection(name, 'live'))}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-
-        {/* Info section */}
-        <Card className="mt-8 bg-muted/30">
-          <CardHeader>
-            <CardTitle className="text-lg">How to Use</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid md:grid-cols-3 gap-6">
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 font-medium">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">1</span>
-                  Browse Files
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Switch between Videos and Live Streams tabs to view all available files in each category.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 font-medium">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">2</span>
-                  Select Files
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Use checkboxes to select individual files or click &quot;Select All&quot; to choose multiple files at once.
-                </p>
-              </div>
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 font-medium">
-                  <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-sm">3</span>
-                  Download
-                </div>
-                <p className="text-sm text-muted-foreground">
-                  Click the download button on individual files or use &quot;Download Selected&quot; for batch downloads.
-                </p>
-              </div>
-            </div>
-            
-            <Separator className="my-4" />
-            
-            <div className="bg-blue-50 dark:bg-blue-950/20 p-4 rounded-lg">
-              <p className="text-sm text-blue-800 dark:text-blue-200">
-                <strong>Note:</strong> Files are downloaded directly from GitHub. Your browser will save them to your default Downloads folder automatically.
-              </p>
+      <main className="container mx-auto px-4 py-6 space-y-6">
+        {/* Add Channel Section */}
+        <Card>
+          <CardContent className="pt-6">
+            <div className="flex gap-3">
+              <Input
+                placeholder="Paste YouTube channel URL (@handle, /c/, /channel/, /user/)..."
+                value={channelInput}
+                onChange={(e) => setChannelInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && addChannel()}
+                className="flex-1"
+              />
+              <Button onClick={addChannel} disabled={loading || !channelInput.trim()}>
+                {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                Add Channel
+              </Button>
             </div>
           </CardContent>
         </Card>
+
+        {/* Channels List & Content */}
+        <div className="grid lg:grid-cols-4 gap-6">
+          {/* Sidebar - Channels */}
+          <div className="lg:col-span-1">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center justify-between">
+                  Channels ({channels.length})
+                  {activeChannel && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => refreshChannel(activeChannel.id)}
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="p-0">
+                <ScrollArea className="h-[500px]">
+                  <div className="space-y-1 p-2">
+                    {channels.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-8">
+                        No channels added yet
+                      </p>
+                    ) : (
+                      channels.map((channel) => (
+                        <button
+                          key={channel.id}
+                          onClick={() => setActiveChannel(channel)}
+                          className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors ${
+                            activeChannel?.id === channel.id
+                              ? 'bg-primary/10 border border-primary/20'
+                              : 'hover:bg-muted'
+                          }`}
+                        >
+                          <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center font-bold text-primary">
+                            {channel.avatar}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm truncate">{channel.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {channel.videos.length} videos • {channel.liveVideos.length} live
+                              {channel.newVideoCount > 0 && (
+                                <Badge className="ml-1 text-xs bg-red-500">+{channel.newVideoCount}</Badge>
+                              )}
+                            </p>
+                          </div>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteChannel(channel.id);
+                            }}
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Content - Videos/Live */}
+          <div className="lg:col-span-3">
+            {activeChannel ? (
+              <Tabs defaultValue="videos">
+                <TabsList className="grid w-full max-w-md grid-cols-2">
+                  <TabsTrigger value="videos" className="flex items-center gap-2">
+                    <Film className="h-4 w-4" />
+                    Videos
+                    <Badge variant="secondary">{activeChannel.videos.length}</Badge>
+                  </TabsTrigger>
+                  <TabsTrigger value="live" className="flex items-center gap-2">
+                    <Radio className="h-4 w-4" />
+                    Live Streams
+                    <Badge variant="secondary">{activeChannel.liveVideos.length}</Badge>
+                  </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="videos" className="mt-4">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg">Videos</CardTitle>
+                      <CardDescription>
+                        {activeChannel.videos.length} videos from {activeChannel.name}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {renderVideoList(activeChannel.videos, false, selectedVideos)}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+
+                <TabsContent value="live" className="mt-4">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg">Live Streams</CardTitle>
+                      <CardDescription>
+                        {activeChannel.liveVideos.length} live streams from {activeChannel.name}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {renderVideoList(activeChannel.liveVideos, true, selectedLive)}
+                    </CardContent>
+                  </Card>
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <Card>
+                <CardContent className="py-16">
+                  <div className="flex flex-col items-center justify-center text-center">
+                    <Film className="h-16 w-16 text-muted-foreground/30 mb-4" />
+                    <h3 className="text-lg font-semibold mb-2">Select or Add a Channel</h3>
+                    <p className="text-muted-foreground max-w-sm">
+                      Add a YouTube channel URL above to browse and download videos. 
+                      Videos will be organized into Videos and Live Streams automatically.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        </div>
+
+        {/* Active Downloads */}
+        {downloads.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Download className="h-5 w-5" />
+                Active Downloads ({downloads.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {downloads.map((job) => (
+                  <div key={job.id} className="flex items-center gap-4 p-3 rounded-lg bg-muted/50">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-sm truncate">{job.title}</p>
+                      {job.status === 'downloading' && (
+                        <div className="mt-2 space-y-1">
+                          <Progress value={job.progress} className="h-2" />
+                          <p className="text-xs text-muted-foreground">
+                            {job.progress}% • {job.speed || ''} {job.eta ? `• ETA: ${job.eta}` : ''}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <Badge 
+                      variant={
+                        job.status === 'completed' ? 'secondary' :
+                        job.status === 'error' ? 'destructive' : 'outline'
+                      }
+                    >
+                      {job.status}
+                    </Badge>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </main>
 
       {/* Footer */}
-      <footer className="border-t mt-auto">
-        <div className="container mx-auto px-4 py-4">
-          <p className="text-center text-sm text-muted-foreground">
-            Data source:{' '}
-            <a
-              href="https://github.com/Ayurved-RasRasayan/youtube-download"
-              target="_blank"
+      <footer className="border-t mt-8">
+        <div className="container mx-auto px-4 py-4 text-center text-sm text-muted-foreground">
+          <p>
+            Powered by{' '}
+            <a 
+              href="https://github.com/Ayurved-RasRasayan/youtube-download" 
+              target="_blank" 
               rel="noopener noreferrer"
               className="text-primary hover:underline"
             >
               Ayurved-RasRasayan/youtube-download
             </a>
-            {' '}on GitHub
+            {' '}• Built with Next.js 16
           </p>
         </div>
       </footer>
