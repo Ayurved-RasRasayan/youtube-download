@@ -1,0 +1,1911 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Channel Downloader - Real Download Edition</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #ffffff;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            padding: 30px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(90deg, #ff0000, #ff4444, #ff0000);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: rgba(255,255,255,0.7);
+            font-size: 1.1rem;
+        }
+
+        .server-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            margin-top: 15px;
+        }
+
+        .server-status.connected {
+            background: rgba(0,200,83,0.2);
+            color: #00c853;
+            border: 1px solid rgba(0,200,83,0.3);
+        }
+
+        .server-status.disconnected {
+            background: rgba(255,0,0,0.2);
+            color: #ff4444;
+            border: 1px solid rgba(255,0,0,0.3);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+
+        .connected .status-dot { background: #00c853; }
+        .disconnected .status-dot { background: #ff4444; }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .input-section {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .input-group {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            min-width: 300px;
+            position: relative;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 16px 20px;
+            font-size: 1rem;
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            background: rgba(0,0,0,0.3);
+            color: white;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #ff0000;
+            box-shadow: 0 0 20px rgba(255,0,0,0.3);
+        }
+
+        input[type="text"]::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+
+        .btn {
+            padding: 16px 32px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #ff0000, #cc0000);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(255,0,0,0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .btn-secondary {
+            background: rgba(255,255,255,0.1);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .btn-download {
+            background: linear-gradient(135deg, #00c853, #009624);
+            color: white;
+            padding: 10px 18px;
+            font-size: 0.85rem;
+        }
+
+        .btn-download:hover:not(:disabled) {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,200,83,0.4);
+        }
+
+        .btn-download:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Download All button in folder header */
+        .download-all-btn {
+            padding: 4px 10px !important;
+            font-size: 0.75rem !important;
+            margin-left: auto;
+        }
+
+        .folder-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .auto-check {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: rgba(255,255,255,0.8);
+        }
+
+        .auto-check input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            accent-color: #ff0000;
+        }
+
+        select {
+            padding: 8px 12px;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .status-bar {
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin-top: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .channels-container {
+            display: grid;
+            gap: 25px;
+        }
+
+        .channel-card {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 1px solid rgba(255,255,255,0.1);
+            transition: all 0.3s ease;
+        }
+
+        .channel-card:hover {
+            border-color: rgba(255,0,0,0.3);
+            box-shadow: 0 10px 40px rgba(255,0,0,0.1);
+        }
+
+        .channel-header {
+            background: linear-gradient(135deg, rgba(255,0,0,0.2), rgba(255,0,0,0.05));
+            padding: 20px 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .channel-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .channel-avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #ff0000, #cc0000);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .channel-name {
+            font-size: 1.4rem;
+            font-weight: 700;
+        }
+
+        .channel-url {
+            color: rgba(255,255,255,0.6);
+            font-size: 0.9rem;
+        }
+
+        .channel-stats {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #ff4444;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: rgba(255,255,255,0.6);
+            text-transform: uppercase;
+        }
+
+        .folder-structure {
+            padding: 20px 25px;
+        }
+
+        .folder {
+            margin-bottom: 20px;
+        }
+
+        .folder:last-child {
+            margin-bottom: 0;
+        }
+
+        .folder-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 15px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-bottom: 10px;
+        }
+
+        .folder-header:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .folder-icon {
+            font-size: 1.3rem;
+        }
+
+        .folder-name {
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .folder-count {
+            background: rgba(255,255,255,0.1);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+
+        .new-badge {
+            background: linear-gradient(135deg, #ff0000, #ff4444);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            animation: glow 2s infinite;
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(255,0,0,0.5); }
+            50% { box-shadow: 0 0 20px rgba(255,0,0,0.8); }
+        }
+
+        .video-list {
+            display: none;
+            grid-gap: 10px;
+            padding-left: 20px;
+        }
+
+        .video-list.open {
+            display: grid;
+        }
+
+        .video-item {
+            background: rgba(0,0,0,0.3);
+            border-radius: 10px;
+            padding: 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            transition: all 0.3s ease;
+            border: 1px solid transparent;
+        }
+
+        .video-item:hover {
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(255,255,255,0.1);
+        }
+
+        .video-item.new-item {
+            border-left: 3px solid #ff0000;
+            background: rgba(255,0,0,0.05);
+        }
+
+        .video-thumbnail {
+            width: 120px;
+            height: 68px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #333, #555);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .video-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .video-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .video-title {
+            font-weight: 600;
+            margin-bottom: 5px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .video-meta {
+            display: flex;
+            gap: 15px;
+            color: rgba(255,255,255,0.6);
+            font-size: 0.85rem;
+            flex-wrap: wrap;
+        }
+
+        .video-actions {
+            display: flex;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .live-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: #ff0000;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+
+        .live-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: white;
+            animation: pulse 1s infinite;
+        }
+
+        .downloaded-badge {
+            background: rgba(0,200,83,0.2);
+            color: #00c853;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: rgba(255,255,255,0.5);
+        }
+
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 20px;
+        }
+
+        .empty-state h3 {
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+            color: rgba(255,255,255,0.7);
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 4px solid rgba(255,255,255,0.1);
+            border-top-color: #ff0000;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.8);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .loading-overlay.active {
+            display: flex;
+        }
+
+        .notification {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.9);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 12px;
+            padding: 15px 25px;
+            display: none;
+            align-items: center;
+            gap: 15px;
+            z-index: 1001;
+            animation: slideIn 0.3s ease;
+            max-width: 400px;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        .notification.show {
+            display: flex;
+        }
+
+        .notification.success { border-left: 4px solid #00c853; }
+        .notification.error { border-left: 4px solid #ff0000; }
+        .notification.info { border-left: 4px solid #2196F3; }
+
+        .settings-panel {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .settings-panel.open {
+            display: block;
+        }
+
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .setting-row:last-child {
+            border-bottom: none;
+        }
+
+        /* Output Folder Setting */
+        .folder-input-group {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+            max-width: 300px;
+        }
+
+        .folder-input-group input {
+            flex: 1;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+
+        .folder-input-group input:focus {
+            outline: none;
+            border-color: #ff0000;
+        }
+
+        .folder-input-group button {
+            padding: 8px 12px;
+            background: rgba(255,0,0,0.2);
+            border: 1px solid rgba(255,0,0,0.4);
+            border-radius: 6px;
+            color: #ff4444;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .folder-input-group button:hover {
+            background: rgba(255,0,0,0.3);
+        }
+
+        .folder-status {
+            font-size: 0.8rem;
+            margin-top: 5px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .folder-status.valid {
+            display: block;
+            color: #00c853;
+            background: rgba(0,200,83,0.1);
+        }
+
+        .folder-status.invalid {
+            display: block;
+            color: #ff0000;
+            background: rgba(255,0,0,0.1);
+        }
+
+        /* Download Mode Selector */
+        .mode-selector {
+            display: flex;
+            gap: 8px;
+        }
+
+        .mode-option {
+            padding: 10px 16px;
+            background: rgba(0,0,0,0.3);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .mode-option:hover {
+            border-color: rgba(255,255,255,0.4);
+            background: rgba(0,0,0,0.4);
+        }
+
+        .mode-option.active {
+            border-color: #ff0000;
+            background: rgba(255,0,0,0.15);
+        }
+
+        .mode-option .mode-icon {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+
+        .mode-option .mode-label {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .mode-option .mode-desc {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.5);
+            margin-top: 2px;
+        }
+
+        /* Queue Info */
+        .queue-info {
+            background: linear-gradient(135deg, rgba(33,150,243,0.1), rgba(33,150,243,0.05));
+            border: 1px solid rgba(33,150,243,0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .queue-info.show {
+            display: block;
+        }
+
+        .queue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .queue-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 0.85rem;
+        }
+
+        .queue-position {
+            background: #2196F3;
+            color: #fff;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+
+        /* Downloads Panel */
+        .downloads-panel {
+            background: rgba(255,255,255,0.05);
+            border-radius: 12px;
+            padding: 20px;
+            margin-top: 20px;
+            display: none;
+        }
+
+        .downloads-panel.open {
+            display: block;
+        }
+
+        .download-item {
+            background: rgba(0,0,0,0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .download-progress {
+            flex: 1;
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00c853, #00e676);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .download-status {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.7);
+        }
+
+        /* Setup Instructions */
+        .setup-instructions {
+            background: linear-gradient(135deg, rgba(255,193,7,0.1), rgba(255,152,0,0.1));
+            border: 1px solid rgba(255,193,7,0.3);
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 30px;
+            display: none;
+        }
+
+        .setup-instructions.show {
+            display: block;
+        }
+
+        .setup-instructions h3 {
+            color: #ffc107;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .setup-steps {
+            list-style: none;
+            counter-reset: step-counter;
+        }
+
+        .setup-steps li {
+            counter-increment: step-counter;
+            position: relative;
+            padding-left: 45px;
+            margin-bottom: 15px;
+            line-height: 1.6;
+        }
+
+        .setup-steps li::before {
+            content: counter(step-counter);
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 30px;
+            height: 30px;
+            background: rgba(255,193,7,0.2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: #ffc107;
+        }
+
+        .code-block {
+            background: rgba(0,0,0,0.4);
+            padding: 10px 15px;
+            border-radius: 6px;
+            font-family: 'Monaco', 'Consolas', monospace;
+            font-size: 0.9rem;
+            margin: 8px 0;
+            overflow-x: auto;
+        }
+
+        @media (max-width: 768px) {
+            header h1 { font-size: 1.8rem; }
+            .input-group { flex-direction: column; }
+            .channel-header { flex-direction: column; text-align: center; }
+            .channel-info { flex-direction: column; }
+            .video-item { flex-direction: column; text-align: center; }
+            .video-meta { justify-content: center; }
+        }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(255,255,255,0.05); }
+        ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎬 YouTube Channel Downloader</h1>
+            <p>Paste a channel URL to organize and download videos & live streams</p>
+            <div class="server-status disconnected" id="serverStatus">
+                <span class="status-dot"></span>
+                <span id="serverStatusText">Connecting to server...</span>
+            </div>
+        </header>
+
+        <!-- Setup Instructions (shown when server not connected) -->
+        <div class="setup-instructions" id="setupInstructions">
+            <h3>⚙️ Setup Required</h3>
+            <p style="margin-bottom: 15px; color: rgba(255,255,255,0.8);">
+                To enable actual video downloading, you need to start the backend server:
+            </p>
+            <ol class="setup-steps">
+                <li>
+                    Install yt-dlp (YouTube downloader):
+                    <div class="code-block">pip install yt-dlp</div>
+                    Or for macOS: <span class="code-block" style="display:inline">brew install yt-dlp</span>
+                </li>
+                <li>
+                    Navigate to the project folder:
+                    <div class="code-block">cd /home/z/my-project/youtube-downloader/server</div>
+                </li>
+                <li>
+                    Install Node.js dependencies:
+                    <div class="code-block">npm install</div>
+                </li>
+                <li>
+                    Start the server:
+                    <div class="code-block">node server.js</div>
+                </li>
+                <li>
+                    Open this page at: <strong>http://localhost:3000</strong>
+                </li>
+            </ol>
+            <button class="btn btn-primary" onclick="checkServerConnection()" style="margin-top: 15px;">
+                🔄 Check Connection
+            </button>
+        </div>
+
+        <div class="input-section">
+            <div class="input-group">
+                <div class="input-wrapper">
+                    <input type="text" id="channelInput" placeholder="Paste YouTube channel URL (e.g., https://www.youtube.com/@ChannelName)">
+                </div>
+                <button class="btn btn-primary" onclick="loadChannel()" id="loadBtn">Load Channel</button>
+                <button class="btn btn-secondary" onclick="toggleSettings()">⚙️ Settings</button>
+                <button class="btn btn-secondary" onclick="toggleDownloads()">⬇️ Downloads</button>
+            </div>
+
+            <div class="controls">
+                <label class="auto-check">
+                    <input type="checkbox" id="autoCheck" checked>
+                    <span>Auto-check for new videos every</span>
+                    <select id="checkInterval">
+                        <option value="30000">30 seconds</option>
+                        <option value="60000">1 minute</option>
+                        <option value="300000" selected>5 minutes</option>
+                        <option value="600000">10 minutes</option>
+                    </select>
+                </label>
+                <button class="btn btn-secondary" onclick="checkAllChannels()">🔄 Check Now</button>
+                <button class="btn btn-secondary" onclick="clearAllChannels()">🗑️ Clear All</button>
+            </div>
+
+            <div class="settings-panel" id="settingsPanel">
+                <h3 style="margin-bottom: 15px;">⚙️ Download Settings</h3>
+                
+                <!-- Output Folder Setting -->
+                <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
+                    <span style="margin-bottom: 8px;">📁 Output Folder for All Downloads</span>
+                    <div class="folder-input-group" style="width: 100%; max-width: 100%;">
+                        <input type="text" id="outputFolder" placeholder="/path/to/downloads/folder..." 
+                               value="" style="flex: 1;">
+                        <button onclick="validateOutputFolder()">✓ Validate</button>
+                        <button onclick="resetOutputFolder()" title="Reset to default">↺ Reset</button>
+                        <button onclick="saveSettings()" style="background: rgba(0,200,83,0.2); border-color: rgba(0,200,83,0.4); color: #00c853;">💾 Save</button>
+                    </div>
+                    <div id="folderStatus" class="folder-status"></div>
+                    <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
+                        Current: <code id="currentFolderDisplay" style="color: #ffc107;">Loading...</code>
+                    </div>
+                </div>
+
+                <!-- Download Mode Setting -->
+                <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
+                    <span style="margin-bottom: 10px;">🔄 Download Mode</span>
+                    <div class="mode-selector">
+                        <div class="mode-option active" id="modeBatch" onclick="setDownloadMode('batch')">
+                            <div class="mode-icon">⚡</div>
+                            <div class="mode-label">Batch</div>
+                            <div class="mode-desc">Multiple at once</div>
+                        </div>
+                        <div class="mode-option" id="modeSequential" onclick="setDownloadMode('sequential')">
+                            <div class="mode-icon">📋</div>
+                            <div class="mode-label">Sequential</div>
+                            <div class="mode-desc">One at a time</div>
+                        </div>
+                    </div>
+                    <div id="batchOptions" style="width: 100%; margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: rgba(255,255,255,0.7);">
+                            Max concurrent downloads:
+                            <input type="number" id="maxConcurrent" value="3" min="1" max="10" 
+                                   style="width: 60px; padding: 4px 8px; background: rgba(0,0,0,0.3); 
+                                          border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff;">
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Video Quality -->
+                <div class="setting-row">
+                    <span>🎬 Video Quality</span>
+                    <select id="videoQuality">
+                        <option value="best">Best Available</option>
+                        <option value="1080">1080p (Full HD)</option>
+                        <option value="720">720p (HD)</option>
+                        <option value="480">480p (SD)</option>
+                        <option value="360">360p (Low)</option>
+                        <option value="worst" style="color: #ff9800;">⚡ Lowest Quality</option>
+                    </select>
+                </div>
+
+                <!-- Download Format -->
+                <div class="setting-row">
+                    <span>📦 Download Format</span>
+                    <select id="downloadFormat">
+                        <option value="mp4">MP4 (Video)</option>
+                        <option value="webm">WebM (Video)</option>
+                        <option value="mp3">MP3 (Audio Only)</option>
+                        <option value="m4a">M4A (Audio Only)</option>
+                    </select>
+                </div>
+
+                <!-- Batch Delay -->
+                <div class="setting-row">
+                    <span>⏱️ Batch Download Delay</span>
+                    <select id="batchDelay">
+                        <option value="0">No Delay (Fastest)</option>
+                        <option value="2000" selected>2 seconds between downloads</option>
+                        <option value="5000">5 seconds between downloads</option>
+                        <option value="10000">10 seconds between downloads</option>
+                    </select>
+                </div>
+
+                <!-- Skip Downloaded -->
+                <div class="setting-row">
+                    <span>Skip Downloaded Videos?</span>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="skipDownloaded" checked style="width: 18px; height: 18px; accent-color: #ff0000;">
+                        <span style="font-size: 0.9rem; color: rgba(255,255,255,0.7);">Don't re-download already downloaded videos</span>
+                    </label>
+                </div>
+
+                <!-- Download Queue Info -->
+                <div class="queue-info" id="queueInfo">
+                    <div class="queue-header">
+                        <strong>📋 Download Queue (Sequential Mode)</strong>
+                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem;" 
+                                onclick="clearDownloadQueue()">Clear Queue</button>
+                    </div>
+                    <div id="queueList"></div>
+                </div>
+            </div>
+
+            <div class="downloads-panel" id="downloadsPanel">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="margin: 0;">📥 Active Downloads</h3>
+                    <span id="downloadModeBadge" style="font-size: 0.8rem; padding: 4px 10px; border-radius: 12px; background: rgba(255,0,0,0.2); color: #ff4444;">Batch Mode</span>
+                </div>
+                <div id="downloadsList">
+                    <p style="color: rgba(255,255,255,0.5);">No active downloads</p>
+                </div>
+            </div>
+
+            <div class="status-bar">
+                <div>
+                    <span id="channelCount">0 channels</span> | 
+                    <span id="totalVideos">0 videos</span> | 
+                    <span id="newCount">0 new</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="channels-container" id="channelsContainer">
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">📺</div>
+                <h3>No Channels Added Yet</h3>
+                <p>Paste a YouTube channel URL above to get started</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <p id="loadingText">Loading channel...</p>
+    </div>
+
+    <div class="notification" id="notification">
+        <span id="notificationText"></span>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE = window.location.origin;
+        
+        // State
+        let channels = [];
+        let activeDownloads = [];
+        let isServerConnected = false;
+        let autoCheckInterval = null;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            checkServerConnection();
+            setupAutoCheck();
+            
+            // Enter key support
+            document.getElementById('channelInput').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') loadChannel();
+            });
+        });
+
+        // Check server connection
+        async function checkServerConnection() {
+            try {
+                const response = await fetch(`${API_BASE}/api/health`);
+                const data = await response.json();
+                
+                isServerConnected = true;
+                updateServerStatus(true, `Server OK | yt-dlp: ${data.ytDlpInstalled ? '✅' : '❌'} | ${data.channels} channels`);
+                document.getElementById('setupInstructions').classList.remove('show');
+                
+                // Load existing channels from server
+                await loadChannelsFromServer();
+                
+            } catch (error) {
+                isServerConnected = false;
+                updateServerStatus(false, 'Server not running');
+                document.getElementById('setupInstructions').classList.add('show');
+            }
+        }
+
+        function updateServerStatus(connected, message) {
+            const statusEl = document.getElementById('serverStatus');
+            const textEl = document.getElementById('serverStatusText');
+            
+            statusEl.className = `server-status ${connected ? 'connected' : 'disconnected'}`;
+            textEl.textContent = message;
+        }
+
+        // Load channels from server
+        async function loadChannelsFromServer() {
+            try {
+                const response = await fetch(`${API_BASE}/api/channels`);
+                const data = await response.json();
+                channels = data.channels || [];
+                renderChannels();
+                updateStats();
+            } catch (error) {
+                console.error('Error loading channels:', error);
+            }
+        }
+
+        // Toggle panels
+        function toggleSettings() {
+            document.getElementById('settingsPanel').classList.toggle('open');
+            if (document.getElementById('settingsPanel').classList.contains('open')) {
+                loadCurrentSettings();
+            }
+        }
+
+        function toggleDownloads() {
+            document.getElementById('downloadsPanel').classList.toggle('open');
+            updateDownloadsList();
+            updateQueueDisplay();
+        }
+
+        // ============ NEW SETTINGS FUNCTIONS ============
+        
+        // Load current settings from server
+        async function loadCurrentSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`);
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Update output folder display
+                    document.getElementById('outputFolder').value = data.outputFolder || '';
+                    document.getElementById('currentFolderDisplay').textContent = data.outputFolder || 'Default folder';
+                    
+                    // Update download mode UI
+                    updateDownloadModeUI(data.downloadMode || 'batch');
+                    
+                    // Update max concurrent
+                    if (data.maxConcurrent) {
+                        document.getElementById('maxConcurrent').value = data.maxConcurrent;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+            }
+        }
+        
+        // Update download mode UI
+        function updateDownloadModeUI(mode) {
+            const batchEl = document.getElementById('modeBatch');
+            const sequentialEl = document.getElementById('modeSequential');
+            const batchOptions = document.getElementById('batchOptions');
+            const badge = document.getElementById('downloadModeBadge');
+            
+            if (mode === 'sequential') {
+                batchEl.classList.remove('active');
+                sequentialEl.classList.add('active');
+                batchOptions.style.display = 'none';
+                badge.textContent = 'Sequential Mode';
+                badge.style.background = 'rgba(33,150,243,0.2)';
+                badge.style.color = '#64B5F6';
+                document.getElementById('queueInfo').classList.add('show');
+            } else {
+                batchEl.classList.add('active');
+                sequentialEl.classList.remove('active');
+                batchOptions.style.display = 'block';
+                badge.textContent = 'Batch Mode';
+                badge.style.background = 'rgba(255,0,0,0.2)';
+                badge.style.color = '#ff4444';
+                document.getElementById('queueInfo').classList.remove('show');
+            }
+        }
+        
+        // Set download mode
+        async function setDownloadMode(mode) {
+            updateDownloadModeUI(mode);
+            await saveSettings();
+            showNotification(`Download mode set to: ${mode}`, 'info');
+        }
+        
+        // Validate output folder
+        async function validateOutputFolder() {
+            const folderPath = document.getElementById('outputFolder').value.trim();
+            const statusEl = document.getElementById('folderStatus');
+            
+            if (!folderPath) {
+                statusEl.className = 'folder-status invalid';
+                statusEl.textContent = '⚠️ Please enter a folder path';
+                return;
+            }
+            
+            statusEl.className = 'folder-status';
+            statusEl.textContent = 'Validating...';
+            statusEl.style.display = 'block';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/settings/validate-folder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath })
+                });
+                
+                const data = await response.json();
+                
+                if (data.valid) {
+                    statusEl.className = 'folder-status valid';
+                    statusEl.textContent = `✅ ${data.message} (${data.path})`;
+                } else {
+                    statusEl.className = 'folder-status invalid';
+                    statusEl.textContent = `❌ ${data.message}`;
+                }
+            } catch (error) {
+                statusEl.className = 'folder-status invalid';
+                statusEl.textContent = `❌ Error: ${error.message}`;
+            }
+        }
+        
+        // Reset output folder to default
+        async function resetOutputFolder() {
+            document.getElementById('outputFolder').value = '';
+            
+            const statusEl = document.getElementById('folderStatus');
+            statusEl.className = 'folder-status valid';
+            statusEl.textContent = '✅ Will reset to default folder on save';
+            statusEl.style.display = 'block';
+            
+            await saveSettings();
+            await loadCurrentSettings();
+            showNotification('Output folder reset to default', 'info');
+        }
+        
+        // Save all settings to server
+        async function saveSettings() {
+            const outputFolder = document.getElementById('outputFolder').value.trim();
+            const downloadMode = document.getElementById('modeSequential').classList.contains('active') ? 'sequential' : 'batch';
+            const maxConcurrent = parseInt(document.getElementById('maxConcurrent').value) || 3;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        outputFolder: outputFolder || null,
+                        downloadMode,
+                        maxConcurrent
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showNotification('✅ Settings saved successfully!', 'success');
+                    document.getElementById('currentFolderDisplay').textContent = data.settings.outputFolder || 'Default folder';
+                } else {
+                    showNotification(`Error: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error saving settings: ${error.message}`, 'error');
+            }
+        }
+        
+        // Clear download queue
+        async function clearDownloadQueue() {
+            if (!confirm('Clear all queued downloads? Currently downloading items will continue.')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/download-queue`, { method: 'DELETE' });
+                const data = await response.json();
+                showNotification(data.message, 'success');
+                updateQueueDisplay();
+            } catch (error) {
+                showNotification('Error clearing queue', 'error');
+            }
+        }
+        
+        // Update queue display
+        async function updateQueueDisplay() {
+            try {
+                const response = await fetch(`${API_BASE}/api/download-queue`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const queueList = document.getElementById('queueList');
+                    
+                    if (data.queueSize === 0) {
+                        queueList.innerHTML = '<p style="color: rgba(255,255,255,0.5); font-size: 0.85rem;">Queue is empty</p>';
+                    } else {
+                        queueList.innerHTML = data.queue.map(item => `
+                            <div class="queue-item">
+                                <span class="queue-position">${item.position}</span>
+                                <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.title}">${item.title}</span>
+                                <span style="color: rgba(255,255,255,0.5); font-size: 0.75rem;">Queued</span>
+                            </div>
+                        `).join('');
+                    }
+                    
+                    // Show/hide queue info based on mode and content
+                    if (data.mode === 'sequential' && data.queueSize > 0) {
+                        document.getElementById('queueInfo').classList.add('show');
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to update queue:', error);
+            }
+        }
+        
+        // Initialize settings on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load current settings after a short delay to ensure server is ready
+            setTimeout(loadCurrentSettings, 1000);
+            
+            // Update queue every 3 seconds when downloads panel is open
+            setInterval(() => {
+                if (document.getElementById('downloadsPanel').classList.contains('open')) {
+                    updateQueueDisplay();
+                }
+            }, 3000);
+        });
+
+        // Load channel
+        async function loadChannel() {
+            const input = document.getElementById('channelInput').value.trim();
+            if (!input) {
+                showNotification('Please enter a channel URL', 'error');
+                return;
+            }
+
+            if (!isServerConnected) {
+                showNotification('Please start the server first', 'error');
+                return;
+            }
+
+            showLoading(true, 'Fetching channel data...');
+            document.getElementById('loadBtn').disabled = true;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/channels`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url: input })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to load channel');
+                }
+
+                showNotification(data.message, 'success');
+                await loadChannelsFromServer();
+                document.getElementById('channelInput').value = '';
+                
+            } catch (error) {
+                showNotification(error.message, 'error');
+            } finally {
+                showLoading(false);
+                document.getElementById('loadBtn').disabled = false;
+            }
+        }
+
+        // Refresh channel
+        async function refreshChannel(channelId) {
+            if (!isServerConnected) return;
+
+            showLoading(true, 'Checking for new videos...');
+
+            try {
+                const response = await fetch(`${API_BASE}/api/channels/${encodeURIComponent(channelId)}/refresh`, {
+                    method: 'POST'
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) throw new Error(data.error);
+
+                showNotification(data.message, data.newVideoCount > 0 ? 'success' : 'info');
+                await loadChannelsFromServer();
+                
+            } catch (error) {
+                showNotification(error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Remove channel
+        async function removeChannel(channelId) {
+            if (!confirm('Remove this channel?')) return;
+
+            try {
+                await fetch(`${API_BASE}/api/channels/${encodeURIComponent(channelId)}`, {
+                    method: 'DELETE'
+                });
+                
+                showNotification('Channel removed', 'info');
+                await loadChannelsFromServer();
+            } catch (error) {
+                showNotification('Error removing channel', 'error');
+            }
+        }
+
+        // Clear all channels
+        async function clearAllChannels() {
+            if (!confirm('Remove ALL channels? This cannot be undone.')) return;
+
+            try {
+                await fetch(`${API_BASE}/api/channels`, { method: 'DELETE' });
+                showNotification('All channels cleared', 'info');
+                await loadChannelsFromServer();
+            } catch (error) {
+                showNotification('Error clearing channels', 'error');
+            }
+        }
+
+        // Check all channels for updates
+        async function checkAllChannels() {
+            if (!isServerConnected || channels.length === 0) return;
+
+            showNotification('Checking for new videos...', 'info');
+            
+            for (const channel of channels) {
+                await refreshChannel(channel.id);
+            }
+        }
+
+        // Download video
+        async function downloadVideo(videoId, title, channelId, isLive) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+
+            const quality = document.getElementById('videoQuality').value;
+            const format = document.getElementById('downloadFormat').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/download`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        videoId,
+                        title,
+                        channelId,
+                        isLive,
+                        quality,
+                        format
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) throw new Error(data.error);
+
+                showNotification(`Downloading: ${title}`, 'success');
+                
+                // Start tracking download
+                trackDownload(data.jobId, title);
+                
+                // Open downloads panel
+                document.getElementById('downloadsPanel').classList.add('open');
+                
+            } catch (error) {
+                showNotification(`Download failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // Download all videos from a specific folder (videos or lives)
+        async function downloadAllVideos(channelId, channelName, onlyLives = false) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            let videos = onlyLives ? channel.liveVideos : channel.videos;
+            if (!videos || videos.length === 0) {
+                showNotification(onlyLives ? 'No live streams to download' : 'No videos to download', 'info');
+                return;
+            }
+            
+            const skipDownloaded = document.getElementById('skipDownloaded').checked;
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            // Filter out already downloaded videos if option is checked
+            if (skipDownloaded) {
+                videos = videos.filter(v => !v.downloaded);
+            }
+            
+            if (videos.length === 0) {
+                showNotification('All videos already downloaded!', 'info');
+                return;
+            }
+            
+            // Confirm before downloading all
+            const confirmMsg = `Download ${videos.length} ${onlyLives ? 'live stream(s)' : 'video(s)'} from "${channelName}"?\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}`;
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`Starting batch download of ${videos.length} items...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            // Download each video with delay
+            for (let i = 0; i < videos.length; i++) {
+                const video = videos[i];
+                showNotification(`[${i + 1}/${videos.length}] Starting: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                // Add delay between downloads (except after last one)
+                if (i < videos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Batch download complete! ${videos.length} items queued.`, 'success');
+        }
+        
+        // Download ALL content from a channel (both videos and lives)
+        async function downloadAllFromChannel(channelId, channelName) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            const skipDownloaded = document.getElementById('skipDownloaded').checked;
+            let allVideos = [...(channel.videos || []), ...(channel.liveVideos || [])];
+            
+            // Filter out already downloaded videos if option is checked
+            if (skipDownloaded) {
+                allVideos = allVideos.filter(v => !v.downloaded);
+            }
+            
+            if (allVideos.length === 0) {
+                showNotification('All content already downloaded!', 'info');
+                return;
+            }
+            
+            const confirmMsg = `Download ALL ${allVideos.length} items from "${channelName}"?\n\n• Videos: ${(channel.videos || []).filter(v => !v.downloaded).length}\n• Live Streams: ${(channel.liveVideos || []).filter(v => !v.downloaded).length}\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}\nDelay: ${document.getElementById('batchDelay').options[document.getElementById('batchDelay').selectedIndex].text}`;
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`🚀 Starting full channel download: ${allVideos.length} items...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            // Download all items
+            for (let i = 0; i < allVideos.length; i++) {
+                const video = allVideos[i];
+                const type = video.isLive ? '🔴 Live' : '📹 Video';
+                showNotification(`[${i + 1}/${allVideos.length}] ${type}: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                // Add delay between downloads (except after last one)
+                if (i < allVideos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Full channel download started! ${allVideos.length} items queued.`, 'success');
+        }
+
+        // Track download progress
+        function trackDownload(jobId, title) {
+            const download = {
+                id: jobId,
+                title,
+                status: 'downloading',
+                progress: 0,
+                speed: '',
+                eta: ''
+            };
+            
+            activeDownloads.push(download);
+            updateDownloadsList();
+
+            // Poll for progress
+            const pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/download/${jobId}`);
+                    const data = await response.json();
+                    
+                    const index = activeDownloads.findIndex(d => d.id === jobId);
+                    if (index >= 0) {
+                        activeDownloads[index] = {
+                            ...activeDownloads[index],
+                            ...data
+                        };
+                        updateDownloadsList();
+
+                        // Stop polling if completed or error
+                        if (data.status === 'completed' || data.status === 'error') {
+                            clearInterval(pollInterval);
+                            
+                            if (data.status === 'completed') {
+                                showNotification(`✅ Download complete: ${title}`, 'success');
+                                await loadChannelsFromServer(); // Refresh to mark as downloaded
+                            } else {
+                                showNotification(`❌ Download failed: ${data.error || 'Unknown error'}`, 'error');
+                            }
+
+                            // Remove from active after delay
+                            setTimeout(() => {
+                                activeDownloads = activeDownloads.filter(d => d.id !== jobId);
+                                updateDownloadsList();
+                            }, 5000);
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error polling download:', error);
+                }
+            }, 2000);
+        }
+
+        // Update downloads list UI
+        function updateDownloadsList() {
+            const container = document.getElementById('downloadsList');
+            
+            if (activeDownloads.length === 0) {
+                container.innerHTML = '<p style="color: rgba(255,255,255,0.5);">No active downloads</p>';
+                return;
+            }
+
+            container.innerHTML = activeDownloads.map(d => `
+                <div class="download-item">
+                    <div style="flex: 1;">
+                        <div style="font-weight: 600; margin-bottom: 5px;">${escapeHtml(d.title)}</div>
+                        <div class="download-progress">
+                            <div class="progress-bar">
+                                <div class="progress-fill" style="width: ${d.progress}%"></div>
+                            </div>
+                            <div class="download-status">
+                                ${d.status === 'downloading' 
+                                    ? `${d.progress}%${d.speed ? ' • ' + d.speed : ''}${d.eta ? ' • ETA: ' + d.eta : ''}`
+                                    : d.status === 'completed' 
+                                        ? '✅ Completed'
+                                        : '❌ Error'
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    ${d.status === 'downloading' 
+                        ? '<span class="loading-spinner" style="width: 24px; height: 24px; border-width: 3px;"></span>'
+                        : ''
+                    }
+                </div>
+            `).join('');
+        }
+
+        // Render channels
+        function renderChannels() {
+            const container = document.getElementById('channelsContainer');
+
+            if (channels.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📺</div>
+                        <h3>No Channels Added Yet</h3>
+                        <p>Paste a YouTube channel URL above to get started</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = channels.map((channel, index) => createChannelCard(channel)).join('');
+
+            // Add folder toggle listeners
+            document.querySelectorAll('.folder-header').forEach(header => {
+                header.addEventListener('click', function() {
+                    const list = this.nextElementSibling;
+                    list.classList.toggle('open');
+                    this.querySelector('.folder-icon').textContent = list.classList.contains('open') ? '📂' : '📁';
+                });
+            });
+        }
+
+        // Create channel card HTML
+        function createChannelCard(channel) {
+            const newBadge = channel.newVideoCount > 0 
+                ? `<span class="new-badge">${channel.newVideoCount} NEW!</span>` 
+                : '';
+            
+            const totalVideos = (channel.videos?.length || 0) + (channel.liveVideos?.length || 0);
+            const downloadedCount = [...(channel.videos || []), ...(channel.liveVideos || [])].filter(v => v.downloaded).length;
+            const downloadableCount = totalVideos - downloadedCount;
+
+            return `
+                <div class="channel-card">
+                    <div class="channel-header">
+                        <div class="channel-info">
+                            <div class="channel-avatar">${channel.avatar}</div>
+                            <div>
+                                <div class="channel-name">${escapeHtml(channel.name)} ${newBadge}</div>
+                                <div class="channel-url">${escapeHtml(channel.url)}</div>
+                            </div>
+                        </div>
+                        <div class="channel-stats">
+                            <div class="stat">
+                                <div class="stat-value">${channel.videos?.length || 0}</div>
+                                <div class="stat-label">Videos</div>
+                            </div>
+                            <div class="stat">
+                                <div class="stat-value">${channel.liveVideos?.length || 0}</div>
+                                <div class="stat-label">Lives</div>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button class="btn btn-primary" 
+                                    onclick="downloadAllFromChannel('${channel.id}', '${escapeHtml(channel.name)}')"
+                                    ${downloadableCount === 0 ? 'disabled' : ''}
+                                    title="Download all videos and live streams">
+                                📥 Download All (${downloadableCount})
+                            </button>
+                            <button class="btn btn-secondary" onclick="refreshChannel('${channel.id}')">🔄</button>
+                            <button class="btn btn-secondary" onclick="removeChannel('${channel.id}')">✕</button>
+                        </div>
+                    </div>
+                    <div class="folder-structure">
+                        <div class="folder">
+                            <div class="folder-header" onclick="toggleFolder(this)">
+                                <span class="folder-icon">📁</span>
+                                <span class="folder-name">📹 Videos (${channel.videos?.length || 0})</span>
+                                <span class="folder-count">${(channel.videos || []).filter(v => v.isNew).length} new</span>
+                                <button class="btn btn-download download-all-btn" 
+                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', false)"
+                                        ${(channel.videos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
+                                        title="Download all videos in this folder">
+                                    📥 All
+                                </button>
+                            </div>
+                            <div class="video-list">
+                                ${(channel.videos || []).map(video => createVideoItem(video, channel.id)).join('')}
+                            </div>
+                        </div>
+                        
+                        <div class="folder">
+                            <div class="folder-header" onclick="toggleFolder(this)">
+                                <span class="folder-icon">📁</span>
+                                <span class="folder-name">🔴 Live Streams (${channel.liveVideos?.length || 0})</span>
+                                <span class="folder-count">${(channel.liveVideos || []).filter(v => v.isNew).length} new</span>
+                                <button class="btn btn-download download-all-btn" 
+                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', true)"
+                                        ${(channel.liveVideos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
+                                        title="Download all live streams in this folder">
+                                    📥 All
+                                </button>
+                            </div>
+                            <div class="video-list">
+                                ${(channel.liveVideos || []).length > 0 
+                                    ? channel.liveVideos.map(video => createVideoItem(video, channel.id)).join('')
+                                    : '<p style="color: rgba(255,255,255,0.5); padding: 20px;">No live streams available</p>'
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // Toggle folder open/close
+        function toggleFolder(headerElement) {
+            const list = headerElement.nextElementSibling;
+            list.classList.toggle('open');
+            headerElement.querySelector('.folder-icon').textContent = list.classList.contains('open') ? '📂' : '📁';
+        }
+
+        // Create video item HTML
+        function createVideoItem(video, channelId) {
+            const newClass = video.isNew ? 'new-item' : '';
+            const newBadge = video.isNew ? '<span class="new-badge">NEW</span>' : '';
+            const downloadedBadge = video.downloaded ? '<span class="downloaded-badge">✓ Downloaded</span>' : '';
+            const liveIndicator = video.isLive 
+                ? '<span class="live-indicator"><span class="live-dot"></span>LIVE</span>' 
+                : '';
+
+            return `
+                <div class="video-item ${newClass}">
+                    <div class="video-thumbnail">
+                        ${video.thumbnail?.startsWith('http') 
+                            ? `<img src="${video.thumbnail}" alt="Thumbnail" onerror="this.parentElement.textContent='🎬'">` 
+                            : '🎬'
+                        }
+                    </div>
+                    <div class="video-info">
+                        <div class="video-title">${escapeHtml(video.title)} ${newBadge} ${downloadedBadge} ${liveIndicator}</div>
+                        <div class="video-meta">
+                            <span>${video.duration}</span>
+                            <span>${video.views}</span>
+                            <span>${formatDate(video.publishedAt)}</span>
+                        </div>
+                    </div>
+                    <div class="video-actions">
+                        <button class="btn btn-download" 
+                                onclick="downloadVideo('${video.id}', '${escapeHtml(video.title).replace(/'/g, "\\'")}', '${channelId}', ${video.isLive})"
+                                ${video.downloaded ? 'disabled' : ''}>
+                            ${video.downloaded ? '✓ Done' : '⬇️ Download'}
+                        </button>
+                        <a href="${video.url}" target="_blank" class="btn btn-secondary" style="padding: 8px 12px;">
+                            🔗
+                        </a>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Utility functions
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function formatDate(dateStr) {
+            if (!dateStr) return 'Unknown';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+
+            if (diffMins < 1) return 'Just now';
+            if (diffMins < 60) return `${diffMins}m ago`;
+            if (diffHours < 24) return `${diffHours}h ago`;
+            if (diffDays < 7) return `${diffDays}d ago`;
+            return date.toLocaleDateString();
+        }
+
+        function updateStats() {
+            const totalVideos = channels.reduce((sum, ch) => 
+                sum + (ch.videos?.length || 0) + (ch.liveVideos?.length || 0), 0);
+            const newVideos = channels.reduce((sum, ch) => sum + (ch.newVideoCount || 0), 0);
+
+            document.getElementById('channelCount').textContent = `${channels.length} channel${channels.length !== 1 ? 's' : ''}`;
+            document.getElementById('totalVideos').textContent = `${totalVideos} video${totalVideos !== 1 ? 's' : ''}`;
+            document.getElementById('newCount').textContent = `${newVideos} new`;
+        }
+
+        function showLoading(show, text = 'Loading...') {
+            const overlay = document.getElementById('loadingOverlay');
+            document.getElementById('loadingText').textContent = text;
+            overlay.classList.toggle('active', show);
+        }
+
+        function showNotification(message, type = 'info') {
+            const notification = document.getElementById('notification');
+            const notificationText = document.getElementById('notificationText');
+            
+            notification.className = `notification ${type} show`;
+            notificationText.textContent = message;
+            
+            setTimeout(() => notification.classList.remove('show'), 4000);
+        }
+
+        // Auto-check setup
+        function setupAutoCheck() {
+            const checkbox = document.getElementById('autoCheck');
+            const intervalSelect = document.getElementById('checkInterval');
+
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked && isServerConnected) {
+                    startAutoCheck(parseInt(intervalSelect.value));
+                } else {
+                    stopAutoCheck();
+                }
+            });
+
+            intervalSelect.addEventListener('change', () => {
+                if (checkbox.checked && isServerConnected) {
+                    stopAutoCheck();
+                    startAutoCheck(parseInt(intervalSelect.value));
+                }
+            });
+        }
+
+        function startAutoCheck(intervalMs) {
+            stopAutoCheck();
+            autoCheckInterval = setInterval(checkAllChannels, intervalMs);
+        }
+
+        function stopAutoCheck() {
+            if (autoCheckInterval) {
+                clearInterval(autoCheckInterval);
+                autoCheckInterval = null;
+            }
+        }
+    </script>
+</body>
+</html>
