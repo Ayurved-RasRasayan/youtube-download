@@ -590,13 +590,16 @@ function getBestLowQualityFormat(videoId) {
     return new Promise((resolve, reject) => {
         console.log('[Format Analyzer] Analyzing formats for video:', videoId);
         
-        const listCmd = 'yt-dlp --list-formats --no-check-certificate --cookies-from-browser edge "https://www.youtube.com/watch?v=' + videoId + '"';
+        // CRITICAL: Include --js-runtimes node - REQUIRED for YouTube as of 2024+
+        const listCmd = 'yt-dlp --js-runtimes node --list-formats --no-check-certificate --cookies-from-browser edge "https://www.youtube.com/watch?v=' + videoId + '"';
         
-        exec(listCmd, { maxBuffer: 50 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+        // Increased timeout to 60 seconds (some videos take longer to analyze)
+        exec(listCmd, { maxBuffer: 50 * 1024 * 1024, timeout: 60000 }, (error, stdout, stderr) => {
             if (error) {
                 console.error('[Format Analyzer] Error listing formats:', error.message);
-                // Fallback to a safe default format that works for most videos
-                resolve('worstvideo[ext=mp4]+worstaudio[ext=m4a]/worstvideo[ext=mp4]/worst');
+                console.error('[Format Analyzer] Using fallback: format 18 (360p pre-merged MP4)');
+                // Fallback to format 18 - most reliable pre-merged MP4 with audio
+                resolve('18');
                 return;
             }
             
@@ -780,6 +783,8 @@ async function executeDownload(reqBody, res, jobId) {
 
         activeDownloads.set(jobId, downloadJob);
 
+        console.log('[Download] ✅ SPAWNING DOWNLOAD PROCESS for:', videoId, '-', title);
+
         // Execute download
         const child = spawn(command, [], { shell: true });
 
@@ -794,27 +799,34 @@ async function executeDownload(reqBody, res, jobId) {
 
         child.stdout.on('data', function(data) {
             output += data.toString();
+            console.log('[Download stdout]', data.toString().trim().substring(0, 200));
             parseProgress(output, jobId);
         });
 
         child.stderr.on('data', function(data) {
             errorOutput += data.toString();
+            console.log('[Download stderr]', data.toString().trim().substring(0, 200));
             parseProgress(errorOutput, jobId);
         });
 
         child.on('close', function(code) {
+            console.log('[Download] ❗ PROCESS CLOSED - Exit code:', code, 'for video:', videoId);
             const job = activeDownloads.get(jobId);
             if (job) {
                 if (code === 0) {
+                    console.log('[Download] ✅ SUCCESS - Video downloaded:', title);
                     job.status = 'completed';
                     job.progress = 100;
                     
                     // Mark as downloaded (not new)
                     markAsDownloaded(channelId, videoId);
                 } else if (code === null || job.status === 'cancelled') {
+                    console.log('[Download] ⛔ CANCELLED - Video:', title);
                     job.status = 'cancelled';
                     job.error = 'Download cancelled by user';
                 } else {
+                    console.error('[Download] ❌ FAILED - Video:', title);
+                    console.error('[Download] Error output:', errorOutput.substring(0, 1000));
                     job.status = 'error';
                     job.error = errorOutput.substring(0, 500);
                 }
@@ -829,6 +841,7 @@ async function executeDownload(reqBody, res, jobId) {
         });
 
         child.on('error', function(err) {
+            console.error('[Download] 💥 SPAWN ERROR for video:', videoId, '-', err.message);
             const job = activeDownloads.get(jobId);
             if (job) {
                 job.status = 'error';
