@@ -355,11 +355,28 @@ app.post('/api/download', function(req, res) {
     if (format === 'mp3' || format === 'm4a') {
         command += ' -x --audio-format ' + format;
         if (quality && quality !== 'best') {
-            command += ' --audio-quality ' + quality;
+            if (quality === 'worst') {
+                command += ' --audio-quality 0'; // Lowest audio quality
+            } else {
+                command += ' --audio-quality ' + quality;
+            }
         }
     } else {
         if (quality && quality !== 'best') {
-            command += ' -f "bestvideo[height<=' + quality + ']+bestaudio/best[height<=' + quality + ']"';
+            if (quality === 'worst') {
+                // Lowest video quality - smallest file size
+                command += ' -f "worstvideo+worstaudio/worst"';
+            } else if (quality === '360') {
+                command += ' -f "bestvideo[height<=360]+bestaudio/best[height<=360]"';
+            } else if (quality === '480') {
+                command += ' -f "bestvideo[height<=480]+bestaudio/best[height<=480]"';
+            } else if (quality === '720') {
+                command += ' -f "bestvideo[height<=720]+bestaudio/best[height<=720]"';
+            } else if (quality === '1080') {
+                command += ' -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]"';
+            } else {
+                command += ' -f "bestvideo[height<=' + quality + ']+bestaudio/best[height<=' + quality + ']"';
+            }
         }
         if (format && format !== 'mp4') {
             command += ' --merge-output-format ' + format;

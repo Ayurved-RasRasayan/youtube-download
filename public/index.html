@@ -179,6 +179,19 @@
             cursor: not-allowed;
         }
 
+        /* Download All button in folder header */
+        .download-all-btn {
+            padding: 4px 10px !important;
+            font-size: 0.75rem !important;
+            margin-left: auto;
+        }
+
+        .folder-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
         .controls {
             display: flex;
             gap: 15px;
@@ -767,9 +780,11 @@
                     <span>Video Quality</span>
                     <select id="videoQuality">
                         <option value="best">Best Available</option>
-                        <option value="1080">1080p</option>
-                        <option value="720">720p</option>
-                        <option value="480">480p</option>
+                        <option value="1080">1080p (Full HD)</option>
+                        <option value="720">720p (HD)</option>
+                        <option value="480">480p (SD)</option>
+                        <option value="360">360p (Low)</option>
+                        <option value="worst" style="color: #ff9800;">⚡ Lowest Quality (Smallest File)</option>
                     </select>
                 </div>
                 <div class="setting-row">
@@ -780,6 +795,22 @@
                         <option value="mp3">MP3 (Audio Only)</option>
                         <option value="m4a">M4A (Audio Only)</option>
                     </select>
+                </div>
+                <div class="setting-row">
+                    <span>Batch Download Delay</span>
+                    <select id="batchDelay">
+                        <option value="0">No Delay (Fastest)</option>
+                        <option value="2000" selected>2 seconds between downloads</option>
+                        <option value="5000">5 seconds between downloads</option>
+                        <option value="10000">10 seconds between downloads</option>
+                    </select>
+                </div>
+                <div class="setting-row">
+                    <span>Skip Downloaded Videos?</span>
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="skipDownloaded" checked style="width: 18px; height: 18px; accent-color: #ff0000;">
+                        <span style="font-size: 0.9rem; color: rgba(255,255,255,0.7);">Don't re-download already downloaded videos</span>
+                    </label>
                 </div>
             </div>
 
@@ -1035,6 +1066,112 @@
                 showNotification(`Download failed: ${error.message}`, 'error');
             }
         }
+        
+        // Download all videos from a specific folder (videos or lives)
+        async function downloadAllVideos(channelId, channelName, onlyLives = false) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            let videos = onlyLives ? channel.liveVideos : channel.videos;
+            if (!videos || videos.length === 0) {
+                showNotification(onlyLives ? 'No live streams to download' : 'No videos to download', 'info');
+                return;
+            }
+            
+            const skipDownloaded = document.getElementById('skipDownloaded').checked;
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            // Filter out already downloaded videos if option is checked
+            if (skipDownloaded) {
+                videos = videos.filter(v => !v.downloaded);
+            }
+            
+            if (videos.length === 0) {
+                showNotification('All videos already downloaded!', 'info');
+                return;
+            }
+            
+            // Confirm before downloading all
+            const confirmMsg = `Download ${videos.length} ${onlyLives ? 'live stream(s)' : 'video(s)'} from "${channelName}"?\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}`;
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`Starting batch download of ${videos.length} items...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            // Download each video with delay
+            for (let i = 0; i < videos.length; i++) {
+                const video = videos[i];
+                showNotification(`[${i + 1}/${videos.length}] Starting: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                // Add delay between downloads (except after last one)
+                if (i < videos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Batch download complete! ${videos.length} items queued.`, 'success');
+        }
+        
+        // Download ALL content from a channel (both videos and lives)
+        async function downloadAllFromChannel(channelId, channelName) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            const skipDownloaded = document.getElementById('skipDownloaded').checked;
+            let allVideos = [...(channel.videos || []), ...(channel.liveVideos || [])];
+            
+            // Filter out already downloaded videos if option is checked
+            if (skipDownloaded) {
+                allVideos = allVideos.filter(v => !v.downloaded);
+            }
+            
+            if (allVideos.length === 0) {
+                showNotification('All content already downloaded!', 'info');
+                return;
+            }
+            
+            const confirmMsg = `Download ALL ${allVideos.length} items from "${channelName}"?\n\n• Videos: ${(channel.videos || []).filter(v => !v.downloaded).length}\n• Live Streams: ${(channel.liveVideos || []).filter(v => !v.downloaded).length}\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}\nDelay: ${document.getElementById('batchDelay').options[document.getElementById('batchDelay').selectedIndex].text}`;
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`🚀 Starting full channel download: ${allVideos.length} items...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            // Download all items
+            for (let i = 0; i < allVideos.length; i++) {
+                const video = allVideos[i];
+                const type = video.isLive ? '🔴 Live' : '📹 Video';
+                showNotification(`[${i + 1}/${allVideos.length}] ${type}: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                // Add delay between downloads (except after last one)
+                if (i < allVideos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Full channel download started! ${allVideos.length} items queued.`, 'success');
+        }
 
         // Track download progress
         function trackDownload(jobId, title) {
@@ -1155,6 +1292,10 @@
             const newBadge = channel.newVideoCount > 0 
                 ? `<span class="new-badge">${channel.newVideoCount} NEW!</span>` 
                 : '';
+            
+            const totalVideos = (channel.videos?.length || 0) + (channel.liveVideos?.length || 0);
+            const downloadedCount = [...(channel.videos || []), ...(channel.liveVideos || [])].filter(v => v.downloaded).length;
+            const downloadableCount = totalVideos - downloadedCount;
 
             return `
                 <div class="channel-card">
@@ -1176,17 +1317,29 @@
                                 <div class="stat-label">Lives</div>
                             </div>
                         </div>
-                        <div style="display: flex; gap: 10px;">
+                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <button class="btn btn-primary" 
+                                    onclick="downloadAllFromChannel('${channel.id}', '${escapeHtml(channel.name)}')"
+                                    ${downloadableCount === 0 ? 'disabled' : ''}
+                                    title="Download all videos and live streams">
+                                📥 Download All (${downloadableCount})
+                            </button>
                             <button class="btn btn-secondary" onclick="refreshChannel('${channel.id}')">🔄</button>
                             <button class="btn btn-secondary" onclick="removeChannel('${channel.id}')">✕</button>
                         </div>
                     </div>
                     <div class="folder-structure">
                         <div class="folder">
-                            <div class="folder-header">
+                            <div class="folder-header" onclick="toggleFolder(this)">
                                 <span class="folder-icon">📁</span>
                                 <span class="folder-name">📹 Videos (${channel.videos?.length || 0})</span>
                                 <span class="folder-count">${(channel.videos || []).filter(v => v.isNew).length} new</span>
+                                <button class="btn btn-download download-all-btn" 
+                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', false)"
+                                        ${(channel.videos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
+                                        title="Download all videos in this folder">
+                                    📥 All
+                                </button>
                             </div>
                             <div class="video-list">
                                 ${(channel.videos || []).map(video => createVideoItem(video, channel.id)).join('')}
@@ -1194,10 +1347,16 @@
                         </div>
                         
                         <div class="folder">
-                            <div class="folder-header">
+                            <div class="folder-header" onclick="toggleFolder(this)">
                                 <span class="folder-icon">📁</span>
                                 <span class="folder-name">🔴 Live Streams (${channel.liveVideos?.length || 0})</span>
                                 <span class="folder-count">${(channel.liveVideos || []).filter(v => v.isNew).length} new</span>
+                                <button class="btn btn-download download-all-btn" 
+                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', true)"
+                                        ${(channel.liveVideos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
+                                        title="Download all live streams in this folder">
+                                    📥 All
+                                </button>
                             </div>
                             <div class="video-list">
                                 ${(channel.liveVideos || []).length > 0 
@@ -1209,6 +1368,13 @@
                     </div>
                 </div>
             `;
+        }
+        
+        // Toggle folder open/close
+        function toggleFolder(headerElement) {
+            const list = headerElement.nextElementSibling;
+            list.classList.toggle('open');
+            headerElement.querySelector('.folder-icon').textContent = list.classList.contains('open') ? '📂' : '📁';
         }
 
         // Create video item HTML
