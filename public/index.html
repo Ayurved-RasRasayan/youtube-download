@@ -1,6 +1,93 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<style id="injected-action-buttons">
+/* ===== INJECTED: Action Buttons (Forced Visible) ===== */
+.btn-download-action { 
+    display: inline-block !important; 
+    visibility: visible !important; 
+    opacity: 1 !important;
+    padding: 6px 12px !important;
+    margin: 3px !important;
+    border: none !important;
+    border-radius: 4px !important;
+    cursor: pointer !important;
+    font-size: 11px !important;
+    font-weight: bold !important;
+    text-transform: uppercase !important;
+    transition: all 0.2s ease !important;
+    text-decoration: none !important;
+    color: #fff !important;
+}
+
+.btn-download-action:hover {
+    transform: scale(1.05) !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3) !important;
+}
+
+/* Button Colors */
+.btn-cancel, .btn-stop { 
+    background: linear-gradient(135deg, #ff6b6b 0%, #ee5a52 100%) !important; 
+    color: #fff !important;
+}
+.btn-cancel:hover, .btn-stop:hover { 
+    background: linear-gradient(135deg, #ff5252 0%, #e53935 100%) !important; 
+}
+
+.btn-resume { 
+    background: linear-gradient(135deg, #4CAF50 0%, #43A047 100%) !important; 
+    color: #fff !important;
+}
+.btn-resume:hover { 
+    background: linear-gradient(135deg, #43A047 0%, #388E3C 100%) !important; 
+}
+
+.btn-remove { 
+    background: linear-gradient(135deg, #9E9E9E 0%, #757575 100%) !important; 
+    color: #fff !important;
+}
+.btn-remove:hover { 
+    background: linear-gradient(135deg, #757575 0%, #616161 100%) !important; 
+}
+
+.btn-open-folder { 
+    background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%) !important; 
+    color: #fff !important;
+}
+.btn-open-folder:hover { 
+    background: linear-gradient(135deg, #1976D2 0%, #1565C0 100%) !important; 
+}
+
+/* Download Actions Container */
+.download-actions {
+    display: flex !important;
+    visibility: visible !important;
+    gap: 5px !important;
+    margin-top: 8px !important;
+    padding: 8px !important;
+    background: rgba(0,0,0,0.03) !important;
+    border-radius: 4px !important;
+    justify-content: center !important;
+}
+
+/* Ensure download items can contain actions */
+.download-item, .download-entry, [class*="download"] {
+    position: relative !important;
+}
+
+/* Auto Quality Badge */
+.auto-quality-badge {
+    display: inline-block !important;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+    color: white !important;
+    padding: 3px 10px !important;
+    border-radius: 12px !important;
+    font-size: 10px !important;
+    font-weight: bold !important;
+    margin-left: 8px !important;
+    vertical-align: middle !important;
+}
+</style>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>YouTube Channel Downloader - Real Download Edition</title>
@@ -850,6 +937,25 @@
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.2); border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.3); }
     </style>
+
+<style id="quality-hider">
+/* Hide quality selectors - auto lowest quality */
+select[id*='quality' i], 
+select[id*='format' i],
+select[name*='quality' i],
+.quality-selector,
+.format-selector,
+[class*='video-quality'],
+label:has(select[id*='quality' i]) { 
+    display: none !important; 
+    visibility: hidden !important; 
+    height: 0 !important; 
+    overflow: hidden !important;
+    pointer-events: none !important;
+    position: absolute !important;
+    left: -9999px !important;
+}
+</style>
 </head>
 <body>
     <div class="container">
@@ -964,17 +1070,21 @@
                     </div>
                 </div>
 
-                <!-- Video Quality -->
-                <div class="setting-row">
+                <!-- Video Quality - AUTO: Lowest Quality (Hidden) -->
+                <div class="setting-row" style="display: none;">
                     <span>🎬 Video Quality</span>
                     <select id="videoQuality">
+                        <option value="worst" selected>⚡ Lowest Quality (Auto)</option>
                         <option value="best">Best Available</option>
                         <option value="1080">1080p (Full HD)</option>
                         <option value="720">720p (HD)</option>
                         <option value="480">480p (SD)</option>
                         <option value="360">360p (Low)</option>
-                        <option value="worst" style="color: #ff9800;">⚡ Lowest Quality</option>
                     </select>
+                </div>
+                <div class="setting-row">
+                    <span>🎬 Video Quality</span>
+                    <span class="auto-quality-badge" style="font-size: 12px; padding: 6px 15px;">⚡ AUTO: LOWEST QUALITY</span>
                 </div>
 
                 <!-- Download Format -->
@@ -1644,9 +1754,9 @@
             }
 
             container.innerHTML = activeDownloads.map(d => `
-                <div class="download-item">
+                <div class="download-item" id="download-${d.id}">
                     <div style="flex: 1;">
-                        <div style="font-weight: 600; margin-bottom: 5px;">${escapeHtml(d.title)}</div>
+                        <div style="font-weight: 600; margin-bottom: 5px;">${escapeHtml(d.title)} <span class="auto-quality-badge">⚡ LOW Q</span></div>
                         <div class="download-progress">
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${d.progress}%"></div>
@@ -1656,15 +1766,27 @@
                                     ? `${d.progress}%${d.speed ? ' • ' + d.speed : ''}${d.eta ? ' • ETA: ' + d.eta : ''}`
                                     : d.status === 'completed' 
                                         ? '✅ Completed'
-                                        : '❌ Error'
+                                        : d.status === 'cancelled'
+                                            ? '⛔ Cancelled'
+                                            : '❌ Error'
                                 }
                             </div>
                         </div>
                     </div>
-                    ${d.status === 'downloading' 
-                        ? '<span class="loading-spinner" style="width: 24px; height: 24px; border-width: 3px;"></span>'
-                        : ''
-                    }
+                    <div class="download-actions">
+                        ${d.status === 'downloading' || d.status === 'pending'
+                            ? `<button class="btn-download-action btn-cancel" onclick="cancelDownload('${d.id}')">⏹ STOP</button>`
+                            : ''
+                        }
+                        ${(d.status === 'error' || d.status === 'cancelled')
+                            ? `<button class="btn-download-action btn-resume" onclick="resumeDownload('${d.id}')">🔄 RETRY</button><button class="btn-download-action btn-remove" onclick="removeDownloadItem('${d.id}')">🗑️</button>`
+                            : ''
+                        }
+                        ${d.status === 'completed'
+                            ? `<button class="btn-download-action btn-open-folder" onclick="showNotification('File saved to downloads folder')">📁 OPEN</button><button class="btn-download-action btn-remove" onclick="removeDownloadItem('${d.id}')">🗑️</button>`
+                            : ''
+                        }
+                    </div>
                 </div>
             `).join('');
         }
@@ -1923,5 +2045,93 @@
             }
         }
     </script>
+<script id="injected-action-functions">
+// ===== INJECTED: Download Action Functions =====
+
+async function cancelDownload(downloadId) {
+    console.log('[Action] Cancelling download:', downloadId);
+    
+    if (!confirm('Are you sure you want to cancel this download?')) return;
+    
+    try {
+        const response = await fetch('/api/cancel/' + downloadId, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Download cancelled successfully!');
+            location.reload();
+        } else {
+            alert('Could not cancel: ' + result.message);
+        }
+    } catch(error) {
+        console.error('[Action] Cancel error:', error);
+        alert('Error cancelling download');
+    }
+}
+
+async function resumeDownload(downloadId) {
+    console.log('[Action] Resuming download:', downloadId);
+    
+    try {
+        const response = await fetch('/api/resume/' + downloadId, { method: 'POST' });
+        const result = await response.json();
+        
+        if (result.success) {
+            alert('Download re-queued!');
+            location.reload();
+        } else {
+            alert('Could not resume: ' + result.message);
+        }
+    } catch(error) {
+        console.error('[Action] Resume error:', error);
+        alert('Error resuming download');
+    }
+}
+
+async function removeDownloadItem(downloadId) {
+    console.log('[Action] Removing download:', downloadId);
+    
+    if (!confirm('Remove this download from the list?')) return;
+    
+    try {
+        const response = await fetch('/api/download/' + downloadId, { method: 'DELETE' });
+        const result = await response.json();
+        
+        if (result.success) {
+            // Remove element from DOM
+            var elem = document.getElementById('download-' + downloadId) || 
+                       document.querySelector('[data-id="' + downloadId + '"]');
+            if (elem) elem.remove();
+            
+            alert('Download removed!');
+        } else {
+            alert('Could not remove: ' + result.message);
+        }
+    } catch(error) {
+        console.error('[Action] Remove error:', error);
+        alert('Error removing download');
+    }
+}
+
+function openFolder(filePath) {
+    console.log('[Action] Opening folder:', filePath);
+    alert('Open folder: ' + (filePath || 'Download folder'));
+}
+
+// Auto-initialize: Make sure buttons are visible
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('[Init] Ensuring action buttons are visible...');
+    
+    // Force show any hidden action buttons
+    var buttons = document.querySelectorAll('.btn-download-action');
+    buttons.forEach(function(btn) {
+        btn.style.display = 'inline-block';
+        btn.style.visibility = 'visible';
+        btn.style.opacity = '1';
+    });
+    
+    console.log('[Init] Found and ensured', buttons.length, 'action buttons are visible');
+});
+</script>
 </body>
 </html>

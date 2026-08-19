@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
@@ -6,6 +7,9 @@ const { execSync, exec, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+
+// Child process tracking for download cancellation
+const childProcessMap = new Map();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,7 +29,7 @@ let DOWNLOADS_DIR = DEFAULT_DOWNLOADS_DIR;
 downloadQueue = [];
 let isProcessingQueue = false;
 let currentDownloadMode = 'batch'; // 'batch' or 'sequential'
-let maxConcurrentDownloads = 3; // For batch mode
+let maxConcurrentDownloads = 5; // For batch mode (increased)
 
 // Load or initialize data FIRST (before loadSettings)
 function loadData() {
@@ -667,6 +671,12 @@ function executeDownload(reqBody, res, jobId) {
     // Execute download
     const child = spawn(command, [], { shell: true });
 
+    // Store child process reference for cancellation
+    downloadJob.childProcess = child;
+    
+    // Also store in global map for API access
+    childProcessMap.set(jobId, child);
+
     var output = '';
     var errorOutput = '';
 
@@ -689,11 +699,17 @@ function executeDownload(reqBody, res, jobId) {
                 
                 // Mark as downloaded (not new)
                 markAsDownloaded(channelId, videoId);
+            } else if (code === null || job.status === 'cancelled') {
+                job.status = 'cancelled';
+                job.error = 'Download cancelled by user';
             } else {
                 job.status = 'error';
                 job.error = errorOutput.substring(0, 500);
             }
             job.completedAt = new Date().toISOString();
+            
+            // Clean up process tracking
+            childProcessMap.delete(jobId);
             
             // Process next in queue after completion
             processDownloadQueue();
@@ -971,6 +987,154 @@ app.get('/', function(req, res) {
 });
 
 // Start server
+
+// API Endpoint: Cancel a download
+app.post('/api/cancel/:id', (req, res) => {
+    const downloadId = req.params.id;
+    console.log('[API] Cancel request for:', downloadId);
+    
+    let cancelled = false;
+    
+    // Try to find and kill the process
+    for (const [pid, proc] of childProcessMap.entries()) {
+        if (pid.includes(downloadId) || proc._downloadId === downloadId) {
+            console.log('[API] Killing process:', pid);
+            try {
+                proc.kill('SIGTERM');
+                setTimeout(() => {
+                    try { proc.kill('SIGKILL'); } catch(e) {}
+                }, 1000);
+                cancelled = true;
+            } catch(e) {
+                console.error('[API] Error killing process:', e.message);
+            }
+            break;
+        }
+    }
+    
+    res.json({ success: cancelled, message: cancelled ? 'Download cancelled' : 'Download not found' });
+});
+
+// API Endpoint: Cancel/Stop a download
+app.post('/api/cancel/:id', (req, res) => {
+    const downloadId = req.params.id;
+    console.log('[API] Cancel request for:', downloadId);
+    
+    let cancelled = false;
+    
+    // Try to get the job first
+    const job = activeDownloads.get(downloadId);
+    
+    if (job && job.childProcess) {
+        try {
+            console.log('[API] Killing process for job:', downloadId);
+            job.childProcess.kill('SIGTERM');
+            job.status = 'cancelled';
+            cancelled = true;
+            
+            // Force kill after 2 seconds if still running
+            setTimeout(() => {
+                try {
+                    job.childProcess.kill('SIGKILL');
+                } catch(e) {}
+            }, 2000);
+        } catch(e) {
+            console.error('[API] Error killing process:', e.message);
+        }
+    } else if (childProcessMap.has(downloadId)) {
+        // Fallback to global map
+        const proc = childProcessMap.get(downloadId);
+        try {
+            proc.kill('SIGTERM');
+            cancelled = true;
+            const fallbackJob = activeDownloads.get(downloadId);
+            if (fallbackJob) fallbackJob.status = 'cancelled';
+        } catch(e) {
+            console.error('[API] Error killing from map:', e.message);
+        }
+    } else {
+        // Just mark as cancelled in active downloads
+        if (job) {
+            job.status = 'cancelled';
+            job.error = 'Cancelled by user';
+            cancelled = true;
+        }
+    }
+    
+    res.json({ success: cancelled, message: cancelled ? 'Download cancelled' : 'Download not found or already finished' });
+});
+
+// API Endpoint: Resume/Retry a failed or cancelled download
+app.post('/api/resume/:id', (req, res) => {
+    const downloadId = req.params.id;
+    console.log('[API] Resume request for:', downloadId);
+    
+    const job = activeDownloads.get(downloadId);
+    
+    if (!job) {
+        return res.status(404).json({ success: false, message: 'Download not found' });
+    }
+    
+    if (job.status === 'error' || job.status === 'cancelled') {
+        // Reset job status and re-execute
+        job.status = 'downloading';
+        job.progress = 0;
+        job.error = null;
+        
+        // Re-execute the download with stored info
+        const reqBody = {
+            videoId: job.videoId,
+            title: job.title,
+            quality: 'worst',
+            format: 'mp4'
+        };
+        
+        executeDownload(reqBody, null, downloadId);
+        
+        res.json({ success: true, message: 'Download restarted' });
+    } else {
+        res.json({ success: false, message: 'Only failed or cancelled downloads can be resumed' });
+    }
+});
+
+// API Endpoint: Remove download item from list
+app.delete('/api/download/:id', (req, res) => {
+    const downloadId = req.params.id;
+    console.log('[API] Remove request for:', downloadId);
+    
+    // Kill process if running
+    const job = activeDownloads.get(downloadId);
+    if (job && job.childProcess) {
+        try { job.childProcess.kill('SIGKILL'); } catch(e) {}
+    }
+    childProcessMap.delete(downloadId);
+    
+    // Remove from active downloads
+    const removed = activeDownloads.delete(downloadId);
+    
+    res.json({ success: removed, message: removed ? 'Download removed' : 'Download not found' });
+});
+
+// API Endpoint: Clear completed/failed downloads
+app.delete('/api/downloads/clear', (req, res) => {
+    console.log('[API] Clear completed downloads');
+    let clearedCount = 0;
+    
+    for (const [id, job] of activeDownloads.entries()) {
+        if (job.status === 'completed' || job.status === 'error' || job.status === 'cancelled') {
+            // Kill if somehow still running
+            if (job.childProcess) {
+                try { job.childProcess.kill('SIGKILL'); } catch(e) {}
+            }
+            childProcessMap.delete(id);
+            activeDownloads.delete(id);
+            clearedCount++;
+        }
+    }
+    
+    res.json({ success: true, message: `Cleared ${clearedCount} downloads`, clearedCount: clearedCount });
+});
+
 app.listen(PORT, function() {
     console.log('');
     console.log('╔══════════════════════════════════════════╗');
