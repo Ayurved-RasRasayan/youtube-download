@@ -1740,7 +1740,7 @@
                     <div class="folder-structure">
                         <div class="folder">
                             <div class="folder-header" onclick="toggleFolder(this)">
-                                <span class="folder-icon">📁</span>
+                                <span class="folder-icon">📂</span>
                                 <span class="folder-name">📹 Videos (${channel.videos?.length || 0})</span>
                                 <span class="folder-count">${(channel.videos || []).filter(v => v.isNew).length} new</span>
                                 <button class="btn btn-download download-all-btn" 
@@ -1750,14 +1750,14 @@
                                     📥 All
                                 </button>
                             </div>
-                            <div class="video-list">
+                            <div class="video-list open">
                                 ${(channel.videos || []).map(video => createVideoItem(video, channel.id)).join('')}
                             </div>
                         </div>
                         
                         <div class="folder">
                             <div class="folder-header" onclick="toggleFolder(this)">
-                                <span class="folder-icon">📁</span>
+                                <span class="folder-icon">📂</span>
                                 <span class="folder-name">🔴 Live Streams (${channel.liveVideos?.length || 0})</span>
                                 <span class="folder-count">${(channel.liveVideos || []).filter(v => v.isNew).length} new</span>
                                 <button class="btn btn-download download-all-btn" 
@@ -1767,7 +1767,7 @@
                                     📥 All
                                 </button>
                             </div>
-                            <div class="video-list">
+                            <div class="video-list open">
                                 ${(channel.liveVideos || []).length > 0 
                                     ? channel.liveVideos.map(video => createVideoItem(video, channel.id)).join('')
                                     : '<p style="color: rgba(255,255,255,0.5); padding: 20px;">No live streams available</p>'
