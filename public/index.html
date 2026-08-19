@@ -1733,6 +1733,8 @@
                                     title="Download all videos and live streams">
                                 📥 Download All (${downloadableCount})
                             </button>
+                            <button class="btn btn-secondary" onclick="expandAllInCard(this)" title="Expand all folders">📂 Expand All</button>
+                            <button class="btn btn-secondary" onclick="collapseAllInCard(this)" title="Collapse all folders">📁 Collapse All</button>
                             <button class="btn btn-secondary" onclick="refreshChannel('${channel.id}')">🔄</button>
                             <button class="btn btn-secondary" onclick="removeChannel('${channel.id}')">✕</button>
                         </div>
@@ -1784,6 +1786,20 @@
             const list = headerElement.nextElementSibling;
             list.classList.toggle('open');
             headerElement.querySelector('.folder-icon').textContent = list.classList.contains('open') ? '📂' : '📁';
+        }
+
+        // Expand all folders within this channel card
+        function expandAllInCard(btn) {
+            const card = btn.closest('.channel-card');
+            card.querySelectorAll('.video-list').forEach(list => list.classList.add('open'));
+            card.querySelectorAll('.folder-icon').forEach(icon => icon.textContent = '📂');
+        }
+
+        // Collapse all folders within this channel card
+        function collapseAllInCard(btn) {
+            const card = btn.closest('.channel-card');
+            card.querySelectorAll('.video-list').forEach(list => list.classList.remove('open'));
+            card.querySelectorAll('.folder-icon').forEach(icon => icon.textContent = '📁');
         }
 
         // Create video item HTML
