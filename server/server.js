@@ -646,16 +646,40 @@ function getBestLowQualityFormat(videoId) {
             console.log('[Format Analyzer] Found MP4 formats:', videoFormats);
             
             if (videoFormats.length > 0) {
-                // Get the lowest quality MP4 video format
-                const bestFormat = videoFormats[0];
+                // PRIORITY 1: Look for format 18 (360p pre-merged MP4 with audio) - MOST RELIABLE
+                let bestFormat = videoFormats.find(f => f.id === '18');
+                
+                // PRIORITY 2: If no format 18, look for other low-quality pre-merged formats with audio
+                // Pre-merged formats typically have IDs like: 5, 6, 17, 18, 34, 35, 36, 37, 38
+                if (!bestFormat) {
+                    const preMergedIds = ['17', '36', '35', '34', '5', '6'];
+                    for (const pmId of preMergedIds) {
+                        bestFormat = videoFormats.find(f => f.id === pmId);
+                        if (bestFormat) break;
+                    }
+                }
+                
+                // PRIORITY 3: Use lowest resolution format (fallback)
+                if (!bestFormat) {
+                    bestFormat = videoFormats[0];
+                }
+                
                 console.log('[Format Analyzer] Selected format:', bestFormat.id, bestFormat.resolution);
                 
-                // Return format ID - will be used as: -f FORMAT_ID+bestaudio/best
-                resolve(bestFormat.id + '+bestaudio[ext=m4a]/' + bestFormat.id);
+                // For pre-merged formats (like 18), just use the format ID directly
+                // For video-only formats, add audio merge
+                const preMergedFormatIds = ['5', '6', '17', '18', '22', '37', '38', '34', '35', '36'];
+                if (preMergedFormatIds.includes(bestFormat.id)) {
+                    // Pre-merged format - no need to merge audio
+                    resolve(bestFormat.id);
+                } else {
+                    // Video-only format - need to merge with audio
+                    resolve(bestFormat.id + '+bestaudio[ext=m4a]/' + bestFormat.id);
+                }
             } else {
-                // No MP4 formats found - use fallback
+                // No MP4 formats found - use fallback chain that prefers pre-merged formats
                 console.warn('[Format Analyzer] No MP4 formats found, using fallback');
-                resolve('worstvideo[ext=mp4]+worstaudio[ext=m4a]/worstvideo[ext=mp4]/worst[ext=mp4]/worst');
+                resolve('18/17/16/15/worstvideo[ext=mp4]+worstaudio[ext=m4a]/worst[ext=mp4]/worst');
             }
         });
     });
