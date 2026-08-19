@@ -11,6 +11,212 @@ const os = require('os');
 // Child process tracking for download cancellation
 const childProcessMap = new Map();
 
+// =============================================================================
+// YOUTUBE AUTHENTICATION SYSTEM - Multiple Methods with Fallback
+// =============================================================================
+
+// Authentication configuration
+const AUTH_CONFIG = {
+    // Rate limiting: delay between downloads in milliseconds (5 seconds default)
+    downloadDelayMs: 5000,
+    
+    // Retry configuration for 403 errors
+    maxRetries: 3,
+    retryDelayBaseMs: 5000, // Starts at 5 seconds, doubles each time
+    
+    // Authentication methods to try (in order of preference)
+    authMethods: ['oauth2', 'browser', 'cookies', 'none'],
+    
+    // Browser cookie sources (in order of preference)
+    browserSources: ['edge', 'chrome', 'firefox', 'brave']
+};
+
+// Track last download time for rate limiting
+let lastDownloadTime = Date.now();
+
+// Test which authentication method works best
+async function testAuthMethod(method, videoId) {
+    const testUrl = `https://www.youtube.com/watch?v=${videoId || 'dQw4w9WgXcQ'}`;
+    let command = '';
+    
+    switch (method) {
+        case 'oauth2':
+            command = `yt-dlp --js-runtimes node --oauth2 --no-check-certificate --skip-download "${testUrl}"`;
+            break;
+        case 'browser':
+            const browser = detectBestBrowser();
+            if (!browser) return { success: false, error: 'No browser found' };
+            command = `yt-dlp --js-runtimes node --cookies-from-browser ${browser} --no-check-certificate --skip-download "${testUrl}"`;
+            break;
+        case 'cookies':
+            command = `yt-dlp --js-runtimes node --no-check-certificate --skip-download "${testUrl}"`;
+            break;
+        default:
+            command = `yt-dlp --js-runtimes node --no-check-certificate --skip-download "${testUrl}"`;
+    }
+    
+    return new Promise((resolve) => {
+        exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+            const output = stdout + stderr;
+            
+            // Check for specific errors
+            if (error) {
+                if (output.includes('403') || output.includes('Forbidden')) {
+                    resolve({ success: false, error: '403 Forbidden' });
+                } else if (output.includes('Sign in') || output.includes('login')) {
+                    resolve({ success: false, error: 'Login required' });
+                } else {
+                    resolve({ success: false, error: error.message });
+                }
+            } else {
+                // Check if we got video info (success)
+                if (output.includes('Extracting URL') || output.includes('Downloading webpage')) {
+                    resolve({ success: true, method: method });
+                } else {
+                    resolve({ success: false, error: 'Unknown response' });
+                }
+            }
+        });
+    });
+}
+
+// Detect the best available browser for cookies
+function detectBestBrowser() {
+    const osType = os.platform();
+    const browsers = [];
+    
+    if (osType === 'win32') {
+        const localAppData = process.env.LOCALAPPDATA || '';
+        const appData = process.env.APPDATA || '';
+        
+        if (fs.existsSync(`${localAppData}\\Microsoft\\Edge\\User Data`)) browsers.push('edge');
+        if (fs.existsSync(`${localAppData}\\Google\\Chrome\\User Data`)) browsers.push('chrome');
+        if (fs.existsSync(`${appData}\\Mozilla\\Firefox\\Profiles`)) browsers.push('firefox');
+        if (fs.existsSync(`${localAppData}\\BraveSoftware\\Brave-Browser\\User Data`)) browsers.push('brave');
+    } else if (osType === 'darwin') {
+        // macOS paths
+        const homeDir = process.env.HOME || '';
+        if (fs.existsSync(`${homeDir}/Library/Application Support/Microsoft Edge`)) browsers.push('edge');
+        if (fs.existsSync(`${homeDir}/Library/Application Support/Google/Chrome`)) browsers.push('chrome');
+        if (fs.existsSync(`${homeDir}/Library/Application Support/Firefox`)) browsers.push('firefox');
+    } else {
+        // Linux paths
+        const homeDir = process.env.HOME || '';
+        if (fs.existsSync(`${homeDir}/.config/microsoft-edge`)) browsers.push('edge');
+        if (fs.existsSync(`${homeDir}/.config/google-chrome`)) browsers.push('chrome');
+        if (fs.existsSync(`${homeDir}/.mozilla/firefox`)) browsers.push('firefox');
+    }
+    
+    console.log('[Auth] Available browsers:', browsers);
+    return browsers[0] || null; // Return first available browser
+}
+
+// Get the best working authentication flags for yt-dlp
+async function getAuthFlags(videoId) {
+    console.log('[Auth] Testing authentication methods...');
+    
+    // Try each method until one works
+    for (const method of AUTH_CONFIG.authMethods) {
+        console.log(`[Auth] Testing method: ${method}...`);
+        const result = await testAuthMethod(method, videoId);
+        
+        if (result.success) {
+            console.log(`[Auth] ✅ Method ${method} works!`);
+            
+            switch (method) {
+                case 'oauth2':
+                    return '--js-runtimes node --oauth2';
+                case 'browser':
+                    const browser = detectBestBrowser();
+                    return `--js-runtimes node --cookies-from-browser ${browser}`;
+                default:
+                    return '--js-runtimes node';
+            }
+        } else {
+            console.log(`[Auth] ❌ Method ${method} failed:`, result.error);
+        }
+    }
+    
+    // All methods failed - use basic flags
+    console.log('[Auth] ⚠️ Using no authentication (may have issues)');
+    return '--js-runtimes node';
+}
+
+// Apply rate limiting - wait appropriate time between downloads
+async function applyRateLimit() {
+    const now = Date.now();
+    const timeSinceLastDownload = now - lastDownloadTime;
+    
+    if (timeSinceLastDownload < AUTH_CONFIG.downloadDelayMs) {
+        const waitTime = AUTH_CONFIG.downloadDelayMs - timeSinceLastDownload;
+        console.log(`[Rate Limit] Waiting ${waitTime}ms to avoid triggering YouTube's anti-bot protection...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    lastDownloadTime = Date.now();
+}
+
+// Smart retry function for downloads that fail with 403
+async function downloadWithRetry(command, jobId, videoId, title, channelId, finalPath, res) {
+    let lastError = null;
+    
+    for (let attempt = 1; attempt <= AUTH_CONFIG.maxRetries; attempt++) {
+        console.log(`[Retry] Attempt ${attempt}/${AUTH_CONFIG.maxRetries} for video:`, videoId);
+        
+        // Apply rate limit before each attempt
+        await applyRateLimit();
+        
+        try {
+            const result = await executeSingleDownload(command, jobId, videoId, title, channelId, finalPath, res);
+            
+            if (result.success) {
+                return result; // Success!
+            } else {
+                lastError = result.error;
+                
+                // Check if it's a 403 error (retryable)
+                if (result.error && (result.error.includes('403') || result.error.includes('Forbidden'))) {
+                    if (attempt < AUTH_CONFIG.maxRetries) {
+                        const delay = AUTH_CONFIG.retryDelayBaseMs * Math.pow(2, attempt - 1); // Exponential backoff
+                        console.log(`[Retry] 403 Forbidden - Retrying in ${delay}ms...`);
+                        
+                        // Try different auth method on retry
+                        const newAuthFlags = await getAuthFlags(videoId);
+                        command = rebuildCommandWithNewAuth(command, newAuthFlags);
+                        
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        continue;
+                    }
+                } else {
+                    // Non-403 error, don't retry
+                    return result;
+                }
+            }
+        } catch (err) {
+            lastError = err.message;
+            console.error(`[Retry] Exception on attempt ${attempt}:`, err.message);
+        }
+    }
+    
+    // All retries exhausted
+    return { success: false, error: `Failed after ${AUTH_CONFIG.maxRetries} attempts: ${lastError}` };
+}
+
+// Rebuild yt-dlp command with different auth flags
+function rebuildCommandWithNewAuth(originalCommand, newAuthFlags) {
+    // Remove old auth-related flags and add new ones
+    let cleaned = originalCommand
+        .replace(/--oauth2/g, '')
+        .replace(/--cookies-from-browser\s+\S+/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+    
+    // Insert new auth flags after 'yt-dlp'
+    cleaned = cleaned.replace('yt-dlp', `yt-dlp ${newAuthFlags}`);
+    
+    return cleaned;
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -586,12 +792,15 @@ function getActiveNonQueuedCount() {
 }
 
 // Get available formats for a video and find lowest quality MP4
-function getBestLowQualityFormat(videoId) {
-    return new Promise((resolve, reject) => {
+async function getBestLowQualityFormat(videoId) {
+    return new Promise(async (resolve, reject) => {
         console.log('[Format Analyzer] Analyzing formats for video:', videoId);
         
-        // CRITICAL: Include --js-runtimes node - REQUIRED for YouTube as of 2024+
-        const listCmd = 'yt-dlp --js-runtimes node --list-formats --no-check-certificate --cookies-from-browser edge "https://www.youtube.com/watch?v=' + videoId + '"';
+        // Get best authentication flags
+        const authFlags = await getAuthFlags(videoId);
+        
+        // CRITICAL: Use detected auth flags - REQUIRED for YouTube as of 2024+
+        const listCmd = `yt-dlp ${authFlags} --list-formats --no-check-certificate "https://www.youtube.com/watch?v=${videoId}"`;
         
         // Increased timeout to 60 seconds (some videos take longer to analyze)
         exec(listCmd, { maxBuffer: 50 * 1024 * 1024, timeout: 60000 }, (error, stdout, stderr) => {
@@ -688,7 +897,111 @@ function getBestLowQualityFormat(videoId) {
     });
 }
 
-// Execute the actual download
+// Execute the actual download (single attempt - returns Promise)
+function executeSingleDownload(command, jobId, videoId, title, channelId, finalPath) {
+    return new Promise((resolve) => {
+        console.log('[Download] ✅ SPAWNING DOWNLOAD PROCESS for:', videoId, '-', title);
+        
+        // Start download process
+        const downloadJob = {
+            id: jobId,
+            videoId: videoId,
+            title: title,
+            status: 'downloading',
+            progress: 0,
+            speed: '',
+            eta: '',
+            startedAt: new Date().toISOString(),
+            mode: currentDownloadMode,
+            outputPath: finalPath
+        };
+
+        activeDownloads.set(jobId, downloadJob);
+
+        // Execute download
+        const child = spawn(command, [], { shell: true });
+
+        // Store child process reference for cancellation
+        downloadJob.childProcess = child;
+        
+        // Also store in global map for API access
+        childProcessMap.set(jobId, child);
+
+        var output = '';
+        var errorOutput = '';
+
+        child.stdout.on('data', function(data) {
+            output += data.toString();
+            console.log('[Download stdout]', data.toString().trim().substring(0, 200));
+            parseProgress(output, jobId);
+        });
+
+        child.stderr.on('data', function(data) {
+            errorOutput += data.toString();
+            console.log('[Download stderr]', data.toString().trim().substring(0, 200));
+            parseProgress(errorOutput, jobId);
+        });
+
+        child.on('close', function(code) {
+            console.log('[Download] ❗ PROCESS CLOSED - Exit code:', code, 'for video:', videoId);
+            
+            if (code === 0) {
+                console.log('[Download] ✅ SUCCESS - Video downloaded:', title);
+                resolve({ success: true });
+                
+                // Update job status
+                const job = activeDownloads.get(jobId);
+                if (job) {
+                    job.status = 'completed';
+                    job.progress = 100;
+                    markAsDownloaded(channelId, videoId);
+                    job.completedAt = new Date().toISOString();
+                    childProcessMap.delete(jobId);
+                }
+            } else if (code === null) {
+                console.log('[Download] ⛔ CANCELLED - Video:', title);
+                resolve({ success: false, error: 'Cancelled' });
+                
+                const job = activeDownloads.get(jobId);
+                if (job) {
+                    job.status = 'cancelled';
+                    job.error = 'Download cancelled by user';
+                    job.completedAt = new Date().toISOString();
+                    childProcessMap.delete(jobId);
+                }
+            } else {
+                console.error('[Download] ❌ FAILED - Video:', title);
+                console.error('[Download] Error output:', errorOutput.substring(0, 1000));
+                resolve({ success: false, error: errorOutput.substring(0, 500) });
+                
+                const job = activeDownloads.get(jobId);
+                if (job) {
+                    job.status = 'error';
+                    job.error = errorOutput.substring(0, 500);
+                    job.completedAt = new Date().toISOString();
+                    childProcessMap.delete(jobId);
+                }
+            }
+            
+            // Process next in queue after completion
+            processDownloadQueue();
+        });
+
+        child.on('error', function(err) {
+            console.error('[Download] 💥 SPAWN ERROR for video:', videoId, '-', err.message);
+            resolve({ success: false, error: err.message });
+            
+            const job = activeDownloads.get(jobId);
+            if (job) {
+                job.status = 'error';
+                job.error = err.message;
+            }
+            processDownloadQueue();
+        });
+    });
+}
+
+// Main download execution function with auth, rate limiting, and retries
 async function executeDownload(reqBody, res, jobId) {
     const videoId = reqBody.videoId;
     const title = reqBody.title;
@@ -738,22 +1051,24 @@ async function executeDownload(reqBody, res, jobId) {
         const formatString = await getBestLowQualityFormat(videoId);
         console.log('[Download] Using format string:', formatString);
         
+        // STEP 2: Get best authentication flags
+        console.log('[Auth] Getting authentication flags...');
+        const authFlags = await getAuthFlags(videoId);
+        console.log('[Auth] Using flags:', authFlags);
+        
         // Update job status to downloading
         analyzingJob.status = 'downloading';
         analyzingJob.speed = '';
         
-        // STEP 2: Build yt-dlp command with detected format
-        // Using essential flags that are REQUIRED for YouTube to work
-        var command = 'yt-dlp';
+        // STEP 3: Build yt-dlp command with detected format and auth
+        var command = `yt-dlp ${authFlags}`;
         
-        // ESSENTIAL flags for YouTube (required as of 2024+):
-        command += ' --js-runtimes node';                   // REQUIRED: JS runtime for YouTube extraction
-        command += ' --no-check-certificate';                // Skip SSL verification issues
-        command += ' --cookies-from-browser edge';            // Use browser cookies for login
+        // Add essential flags
+        command += ' --no-check-certificate';           // Skip SSL verification issues
         command += ' --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"';  // Standard browser UA
         
         // Add the auto-detected format (format 18 = pre-merged 360p MP4 with audio)
-        command += ' -f "' + formatString + '"';
+        command += ` -f "${formatString}"`;
         
         // Only add merge flag if format string contains "+" (video+audio merge needed)
         if (formatString.includes('+')) {
@@ -761,169 +1076,112 @@ async function executeDownload(reqBody, res, jobId) {
         }
         
         // Add output template
-        command += ' -o "' + outputTemplate + '"';
+        command += ` -o "${outputTemplate}"`;
 
-        command += ' "https://www.youtube.com/watch?v=' + videoId + '"';
+        command += ` "https://www.youtube.com/watch?v=${videoId}"`;
         
         console.log('[Download] Final command:', command);
         
-        // Start download process
-        const downloadJob = {
-            id: jobId,
-            videoId: videoId,
-            title: title,
-            status: 'downloading',
-            progress: 0,
-            speed: '',
-            eta: '',
-            startedAt: new Date().toISOString(),
-            mode: currentDownloadMode,
-            outputPath: finalPath
-        };
-
-        activeDownloads.set(jobId, downloadJob);
-
-        console.log('[Download] ✅ SPAWNING DOWNLOAD PROCESS for:', videoId, '-', title);
-
-        // Execute download
-        const child = spawn(command, [], { shell: true });
-
-        // Store child process reference for cancellation
-        downloadJob.childProcess = child;
+        // STEP 4: Execute download with retry logic and rate limiting
+        const result = await downloadWithRetry(command, jobId, videoId, title, channelId, finalPath, res);
         
-        // Also store in global map for API access
-        childProcessMap.set(jobId, child);
-
-        var output = '';
-        var errorOutput = '';
-
-        child.stdout.on('data', function(data) {
-            output += data.toString();
-            console.log('[Download stdout]', data.toString().trim().substring(0, 200));
-            parseProgress(output, jobId);
-        });
-
-        child.stderr.on('data', function(data) {
-            errorOutput += data.toString();
-            console.log('[Download stderr]', data.toString().trim().substring(0, 200));
-            parseProgress(errorOutput, jobId);
-        });
-
-        child.on('close', function(code) {
-            console.log('[Download] ❗ PROCESS CLOSED - Exit code:', code, 'for video:', videoId);
-            const job = activeDownloads.get(jobId);
-            if (job) {
-                if (code === 0) {
-                    console.log('[Download] ✅ SUCCESS - Video downloaded:', title);
-                    job.status = 'completed';
-                    job.progress = 100;
-                    
-                    // Mark as downloaded (not new)
-                    markAsDownloaded(channelId, videoId);
-                } else if (code === null || job.status === 'cancelled') {
-                    console.log('[Download] ⛔ CANCELLED - Video:', title);
-                    job.status = 'cancelled';
-                    job.error = 'Download cancelled by user';
-                } else {
-                    console.error('[Download] ❌ FAILED - Video:', title);
-                    console.error('[Download] Error output:', errorOutput.substring(0, 1000));
-                    job.status = 'error';
-                    job.error = errorOutput.substring(0, 500);
-                }
-                job.completedAt = new Date().toISOString();
-                
-                // Clean up process tracking
-                childProcessMap.delete(jobId);
-                
-                // Process next in queue after completion
-                processDownloadQueue();
-            }
-        });
-
-        child.on('error', function(err) {
-            console.error('[Download] 💥 SPAWN ERROR for video:', videoId, '-', err.message);
-            const job = activeDownloads.get(jobId);
-            if (job) {
-                job.status = 'error';
-                job.error = err.message;
-            }
-            processDownloadQueue();
-        });
-
-        // Send response if provided
-        if (res && !res.headersSent) {
-            res.json({ 
-                success: true, 
-                jobId: jobId,
-                message: currentDownloadMode === 'sequential' ? 'Download queued (sequential mode)' : 'Download started with auto-detected format',
-                outputPath: finalPath,
-                mode: currentDownloadMode,
-                queuePosition: downloadQueue.length + 1
+        if (!result.success && res && !res.headersSent) {
+            res.status(500).json({ 
+                error: 'Download failed', 
+                details: result.error,
+                message: 'Video may be private, restricted, or YouTube is blocking automated downloads'
             });
+        } else if (res && !res.headersSent) {
+            res.json({ success: true, jobId: jobId });
+        }
+
+    } catch (err) {
+        console.error('[Download] ❌ EXCEPTION:', err.message);
+        const job = activeDownloads.get(jobId);
+        if (job) {
+            job.status = 'error';
+            job.error = err.message;
         }
         
-    } catch(error) {
-        console.error('[Download] Error during format analysis or download:', error);
-        
-        // Update job status to error
-        const errorJob = activeDownloads.get(jobId);
-        if (errorJob) {
-            errorJob.status = 'error';
-            errorJob.error = 'Format analysis failed: ' + error.message;
+        if (res && !res.headersSent) {
+            res.status(500).json({ error: 'Download failed', details: err.message });
         }
         
-        // Try fallback download without format analysis
-        console.log('[Download] Attempting fallback download...');
-        
-        var fallbackCommand = 'yt-dlp --no-check-certificate --cookies-from-browser edge -f "worst[ext=mp4]/worst" --merge-output-format mp4 -o "' + outputTemplate + '" https://www.youtube.com/watch?v=' + videoId;
-        
-        const fallbackChild = spawn(fallbackCommand, [], { shell: true });
-        
-        const fallbackJob = activeDownloads.get(jobId) || analyzingJob;
-        fallbackJob.status = 'downloading';
-        fallbackJob.childProcess = fallbackChild;
-        childProcessMap.set(jobId, fallbackChild);
-        
-        var fbOutput = '';
-        var fbErrorOutput = '';
-        
-        fallbackChild.stdout.on('data', function(data) {
-            fbOutput += data.toString();
-            parseProgress(fbOutput, jobId);
-        });
-        
-        fallbackChild.stderr.on('data', function(data) {
-            fbErrorOutput += data.toString();
-            parseProgress(fbErrorOutput, jobId);
-        });
-        
-        fallbackChild.on('close', function(code) {
-            const job = activeDownloads.get(jobId);
-            if (job) {
-                if (code === 0) {
-                    job.status = 'completed';
-                    job.progress = 100;
-                    markAsDownloaded(channelId, videoId);
-                } else {
-                    job.status = 'error';
-                    job.error = fbErrorOutput.substring(0, 500);
-                }
-                job.completedAt = new Date().toISOString();
-                childProcessMap.delete(jobId);
-                processDownloadQueue();
-            }
-        });
-        
-        fallbackChild.on('error', function(err) {
-            const job = activeDownloads.get(jobId);
-            if (job) {
-                job.status = 'error';
-                job.error = err.message;
-            }
-            processDownloadQueue();
-        });
+        processDownloadQueue();
     }
 }
+
+// =============================================================================
+// AUTHENTICATION API ENDPOINTS
+// =============================================================================
+
+// Test authentication methods and return the best one
+app.get('/api/auth/test', async function(req, res) {
+    const videoId = req.query.videoId || 'dQw4w9WgXcQ';
+    
+    console.log('[API] Testing authentication methods...');
+    
+    const results = {};
+    
+    for (const method of AUTH_CONFIG.authMethods) {
+        try {
+            const result = await testAuthMethod(method, videoId);
+            results[method] = result;
+        } catch (err) {
+            results[method] = { success: false, error: err.message };
+        }
+    }
+    
+    // Detect available browsers
+    results.availableBrowsers = [];
+    const browsers = ['edge', 'chrome', 'firefox', 'brave'];
+    for (const browser of browsers) {
+        if (detectBestBrowser() === browser || 
+            (detectBestBrowser() && detectBestBrowser().includes(browser))) {
+            results.availableBrowsers.push(browser);
+        }
+    }
+    
+    res.json({
+        status: 'Authentication test complete',
+        bestMethod: Object.keys(results).find(key => results[key].success === true) || 'none',
+        methods: results,
+        config: {
+            downloadDelayMs: AUTH_CONFIG.downloadDelayMs,
+            maxRetries: AUTH_CONFIG.maxRetries
+        }
+    });
+});
+
+// Get current authentication status
+app.get('/api/auth/status', function(req, res) {
+    res.json({
+        status: 'OK',
+        authConfig: AUTH_CONFIG,
+        lastDownloadTime: lastDownloadTime,
+        timeSinceLastDownload: Date.now() - lastDownloadTime,
+        nextDownloadAvailableAt: new Date(lastDownloadTime + AUTH_CONFIG.downloadDelayMs).toISOString(),
+        detectedBrowser: detectBestBrowser()
+    });
+});
+
+// Update authentication configuration
+app.post('/api/auth/config', function(req, res) {
+    if (req.body.downloadDelayMs) {
+        AUTH_CONFIG.downloadDelayMs = Math.max(1000, Math.min(60000, req.body.downloadDelayMs)); // 1-60 seconds
+    }
+    if (req.body.maxRetries) {
+        AUTH_CONFIG.maxRetries = Math.max(1, Math.min(10, req.body.maxRetries)); // 1-10 retries
+    }
+    
+    console.log('[Auth] Config updated:', AUTH_CONFIG);
+    
+    res.json({
+        success: true,
+        message: 'Configuration updated',
+        config: AUTH_CONFIG
+    });
+});
 
 // Download video (main endpoint)
 app.post('/api/download', function(req, res) {
