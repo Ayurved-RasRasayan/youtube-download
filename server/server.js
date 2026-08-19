@@ -740,12 +740,13 @@ async function executeDownload(reqBody, res, jobId) {
         analyzingJob.speed = '';
         
         // STEP 2: Build yt-dlp command with detected format
-        // Using ONLY essential, proven-to-work flags
+        // Using essential flags that are REQUIRED for YouTube to work
         var command = 'yt-dlp';
         
-        // Essential flags only (no experimental/problematic ones)
-        command += ' --no-check-certificate';           // Skip SSL verification issues
-        command += ' --cookies-from-browser edge';       // Use browser cookies for login
+        // ESSENTIAL flags for YouTube (required as of 2024+):
+        command += ' --js-runtimes node';                   // REQUIRED: JS runtime for YouTube extraction
+        command += ' --no-check-certificate';                // Skip SSL verification issues
+        command += ' --cookies-from-browser edge';            // Use browser cookies for login
         command += ' --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"';  // Standard browser UA
         
         // Add the auto-detected format (format 18 = pre-merged 360p MP4 with audio)
