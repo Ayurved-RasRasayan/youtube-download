@@ -26,32 +26,7 @@ let isProcessingQueue = false;
 let currentDownloadMode = 'batch'; // 'batch' or 'sequential'
 let maxConcurrentDownloads = 3; // For batch mode
 
-// Ensure downloads directory exists
-function ensureDownloadsDir() {
-    if (!fs.existsSync(DOWNLOADS_DIR)) {
-        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
-    }
-}
-ensureDownloadsDir();
-
-// Load user settings from data
-function loadSettings() {
-    if (appData.settings) {
-        if (appData.settings.outputFolder) {
-            DOWNLOADS_DIR = appData.settings.outputFolder;
-            ensureDownloadsDir();
-        }
-        if (appData.settings.downloadMode) {
-            currentDownloadMode = appData.settings.downloadMode;
-        }
-        if (appData.settings.maxConcurrent) {
-            maxConcurrentDownloads = appData.settings.maxConcurrent;
-        }
-    }
-}
-loadSettings();
-
-// Load or initialize data
+// Load or initialize data FIRST (before loadSettings)
 function loadData() {
     try {
         if (fs.existsSync(DATA_FILE)) {
@@ -68,6 +43,31 @@ function saveData(data) {
 }
 
 let appData = loadData();
+
+// Ensure downloads directory exists
+function ensureDownloadsDir() {
+    if (!fs.existsSync(DOWNLOADS_DIR)) {
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    }
+}
+ensureDownloadsDir();
+
+// Load user settings from data (AFTER appData is initialized)
+function loadSettings() {
+    if (appData && appData.settings) {
+        if (appData.settings.outputFolder) {
+            DOWNLOADS_DIR = appData.settings.outputFolder;
+            ensureDownloadsDir();
+        }
+        if (appData.settings.downloadMode) {
+            currentDownloadMode = appData.settings.downloadMode;
+        }
+        if (appData.settings.maxConcurrent) {
+            maxConcurrentDownloads = appData.settings.maxConcurrent;
+        }
+    }
+}
+loadSettings();
 
 // Check if yt-dlp is installed
 function checkYtDlp() {
