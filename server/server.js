@@ -585,12 +585,86 @@ function getActiveNonQueuedCount() {
     return count;
 }
 
+// Get available formats for a video and find lowest quality MP4
+function getBestLowQualityFormat(videoId) {
+    return new Promise((resolve, reject) => {
+        console.log('[Format Analyzer] Analyzing formats for video:', videoId);
+        
+        const listCmd = 'yt-dlp --list-formats --no-check-certificate --cookies-from-browser edge "https://www.youtube.com/watch?v=' + videoId + '"';
+        
+        exec(listCmd, { maxBuffer: 50 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('[Format Analyzer] Error listing formats:', error.message);
+                // Fallback to a safe default format that works for most videos
+                resolve('worstvideo[ext=mp4]+worstaudio[ext=m4a]/worstvideo[ext=mp4]/worst');
+                return;
+            }
+            
+            const output = stdout + stderr;
+            console.log('[Format Analyzer] Raw format output:', output.substring(0, 500));
+            
+            // Parse format lines - look for MP4 video formats
+            const lines = output.split('\n');
+            const videoFormats = [];
+            
+            for (const line of lines) {
+                // Match format lines like: "137 mp4 1920x1080   3875KiB  3450kps 30fps"
+                // or "18  mp4    360p     1234KiB   800kps"
+                const match = line.match(/^\s*(\d+)\s+(mp4|webm)\s+(\d+x\d+|\d+p)/i);
+                if (match) {
+                    const formatId = match[1];
+                    const ext = match[2].toLowerCase();
+                    const resolution = match[3];
+                    
+                    // Only consider MP4 formats
+                    if (ext === 'mp4') {
+                        let height = 9999;
+                        
+                        // Parse height from resolution
+                        if (resolution.includes('x')) {
+                            height = parseInt(resolution.split('x')[1]) || 9999;
+                        } else if (resolution.includes('p')) {
+                            height = parseInt(resolution.replace('p', '')) || 9999;
+                        }
+                        
+                        // Skip audio-only formats (usually very small heights or marked as audio)
+                        if (height > 50) {
+                            videoFormats.push({
+                                id: formatId,
+                                resolution: resolution,
+                                height: height,
+                                ext: ext
+                            });
+                        }
+                    }
+                }
+            }
+            
+            // Sort by height (ascending) to get lowest quality first
+            videoFormats.sort((a, b) => a.height - b.height);
+            
+            console.log('[Format Analyzer] Found MP4 formats:', videoFormats);
+            
+            if (videoFormats.length > 0) {
+                // Get the lowest quality MP4 video format
+                const bestFormat = videoFormats[0];
+                console.log('[Format Analyzer] Selected format:', bestFormat.id, bestFormat.resolution);
+                
+                // Return format ID - will be used as: -f FORMAT_ID+bestaudio/best
+                resolve(bestFormat.id + '+bestaudio[ext=m4a]/' + bestFormat.id);
+            } else {
+                // No MP4 formats found - use fallback
+                console.warn('[Format Analyzer] No MP4 formats found, using fallback');
+                resolve('worstvideo[ext=mp4]+worstaudio[ext=m4a]/worstvideo[ext=mp4]/worst[ext=mp4]/worst');
+            }
+        });
+    });
+}
+
 // Execute the actual download
-function executeDownload(reqBody, res, jobId) {
+async function executeDownload(reqBody, res, jobId) {
     const videoId = reqBody.videoId;
     const title = reqBody.title;
-    const quality = reqBody.quality;
-    const format = reqBody.format;
     const channelId = reqBody.channelId;
     const customOutputFolder = reqBody.outputFolder; // Allow per-request override
     
@@ -615,125 +689,192 @@ function executeDownload(reqBody, res, jobId) {
 
     const outputTemplate = path.join(finalPath, safeTitle + '.%(ext)s');
     
-    // Build yt-dlp command
-    var command = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github -o "' + outputTemplate + '"';
-    
-    // Add quality/format options
-    if (format === 'mp3' || format === 'm4a') {
-        command += ' -x --audio-format ' + format;
-        if (quality && quality !== 'best') {
-            if (quality === 'worst') {
-                command += ' --audio-quality 0'; // Lowest audio quality
-            } else {
-                command += ' --audio-quality ' + quality;
-            }
-        }
-    } else {
-        if (quality && quality !== 'best') {
-            if (quality === 'worst') {
-                // Lowest video quality - smallest file size
-                command += ' -f "worstvideo+worstaudio/worst"';
-            } else if (quality === '360') {
-                command += ' -f "bestvideo[height<=360]+bestaudio/best[height<=360]"';
-            } else if (quality === '480') {
-                command += ' -f "bestvideo[height<=480]+bestaudio/best[height<=480]"';
-            } else if (quality === '720') {
-                command += ' -f "bestvideo[height<=720]+bestaudio/best[height<=720]"';
-            } else if (quality === '1080') {
-                command += ' -f "bestvideo[height<=1080]+bestaudio/best[height<=1080]"';
-            } else {
-                command += ' -f "bestvideo[height<=' + quality + ']+bestaudio/best[height<=' + quality + ']"';
-            }
-        }
-        if (format && format !== 'mp4') {
-            command += ' --merge-output-format ' + format;
-        }
-    }
-
-    command += ' https://www.youtube.com/watch?v=' + videoId;
-
-    // Start download process
-    const downloadJob = {
+    // Update job status to "analyzing" while we check formats
+    const analyzingJob = {
         id: jobId,
         videoId: videoId,
         title: title,
-        status: 'downloading',
+        status: 'analyzing',
         progress: 0,
-        speed: '',
+        speed: 'Analyzing formats...',
         eta: '',
         startedAt: new Date().toISOString(),
         mode: currentDownloadMode,
         outputPath: finalPath
     };
-
-    activeDownloads.set(jobId, downloadJob);
-
-    // Execute download
-    const child = spawn(command, [], { shell: true });
-
-    // Store child process reference for cancellation
-    downloadJob.childProcess = child;
     
-    // Also store in global map for API access
-    childProcessMap.set(jobId, child);
+    activeDownloads.set(jobId, analyzingJob);
+    
+    try {
+        // STEP 1: Analyze available formats and find lowest quality MP4
+        console.log('[Download] Starting format analysis for:', videoId);
+        const formatString = await getBestLowQualityFormat(videoId);
+        console.log('[Download] Using format string:', formatString);
+        
+        // Update job status to downloading
+        analyzingJob.status = 'downloading';
+        analyzingJob.speed = '';
+        
+        // STEP 2: Build yt-dlp command with detected format
+        var command = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github';
+        
+        // Add the auto-detected format (lowest quality MP4)
+        command += ' -f "' + formatString + '"';
+        
+        // Force MP4 output
+        command += ' --merge-output-format mp4';
+        
+        // Add output template
+        command += ' -o "' + outputTemplate + '"';
 
-    var output = '';
-    var errorOutput = '';
-
-    child.stdout.on('data', function(data) {
-        output += data.toString();
-        parseProgress(output, jobId);
-    });
-
-    child.stderr.on('data', function(data) {
-        errorOutput += data.toString();
-        parseProgress(errorOutput, jobId);
-    });
-
-    child.on('close', function(code) {
-        const job = activeDownloads.get(jobId);
-        if (job) {
-            if (code === 0) {
-                job.status = 'completed';
-                job.progress = 100;
-                
-                // Mark as downloaded (not new)
-                markAsDownloaded(channelId, videoId);
-            } else if (code === null || job.status === 'cancelled') {
-                job.status = 'cancelled';
-                job.error = 'Download cancelled by user';
-            } else {
-                job.status = 'error';
-                job.error = errorOutput.substring(0, 500);
-            }
-            job.completedAt = new Date().toISOString();
-            
-            // Clean up process tracking
-            childProcessMap.delete(jobId);
-            
-            // Process next in queue after completion
-            processDownloadQueue();
-        }
-    });
-
-    child.on('error', function(err) {
-        const job = activeDownloads.get(jobId);
-        if (job) {
-            job.status = 'error';
-            job.error = err.message;
-        }
-        processDownloadQueue();
-    });
-
-    // Send response if provided
-    if (res && !res.headersSent) {
-        res.json({ 
-            success: true, 
-            jobId: jobId,
-            message: currentDownloadMode === 'sequential' ? 'Download queued (sequential mode)' : 'Download started',
-            outputPath: finalPath,
+        command += ' https://www.youtube.com/watch?v=' + videoId;
+        
+        console.log('[Download] Final command prepared');
+        
+        // Start download process
+        const downloadJob = {
+            id: jobId,
+            videoId: videoId,
+            title: title,
+            status: 'downloading',
+            progress: 0,
+            speed: '',
+            eta: '',
+            startedAt: new Date().toISOString(),
             mode: currentDownloadMode,
-            queuePosition: downloadQueue.length + 1
+            outputPath: finalPath
+        };
+
+        activeDownloads.set(jobId, downloadJob);
+
+        // Execute download
+        const child = spawn(command, [], { shell: true });
+
+        // Store child process reference for cancellation
+        downloadJob.childProcess = child;
+        
+        // Also store in global map for API access
+        childProcessMap.set(jobId, child);
+
+        var output = '';
+        var errorOutput = '';
+
+        child.stdout.on('data', function(data) {
+            output += data.toString();
+            parseProgress(output, jobId);
+        });
+
+        child.stderr.on('data', function(data) {
+            errorOutput += data.toString();
+            parseProgress(errorOutput, jobId);
+        });
+
+        child.on('close', function(code) {
+            const job = activeDownloads.get(jobId);
+            if (job) {
+                if (code === 0) {
+                    job.status = 'completed';
+                    job.progress = 100;
+                    
+                    // Mark as downloaded (not new)
+                    markAsDownloaded(channelId, videoId);
+                } else if (code === null || job.status === 'cancelled') {
+                    job.status = 'cancelled';
+                    job.error = 'Download cancelled by user';
+                } else {
+                    job.status = 'error';
+                    job.error = errorOutput.substring(0, 500);
+                }
+                job.completedAt = new Date().toISOString();
+                
+                // Clean up process tracking
+                childProcessMap.delete(jobId);
+                
+                // Process next in queue after completion
+                processDownloadQueue();
+            }
+        });
+
+        child.on('error', function(err) {
+            const job = activeDownloads.get(jobId);
+            if (job) {
+                job.status = 'error';
+                job.error = err.message;
+            }
+            processDownloadQueue();
+        });
+
+        // Send response if provided
+        if (res && !res.headersSent) {
+            res.json({ 
+                success: true, 
+                jobId: jobId,
+                message: currentDownloadMode === 'sequential' ? 'Download queued (sequential mode)' : 'Download started with auto-detected format',
+                outputPath: finalPath,
+                mode: currentDownloadMode,
+                queuePosition: downloadQueue.length + 1
+            });
+        }
+        
+    } catch(error) {
+        console.error('[Download] Error during format analysis or download:', error);
+        
+        // Update job status to error
+        const errorJob = activeDownloads.get(jobId);
+        if (errorJob) {
+            errorJob.status = 'error';
+            errorJob.error = 'Format analysis failed: ' + error.message;
+        }
+        
+        // Try fallback download without format analysis
+        console.log('[Download] Attempting fallback download...');
+        
+        var fallbackCommand = 'yt-dlp --no-check-certificate --cookies-from-browser edge -f "worst[ext=mp4]/worst" --merge-output-format mp4 -o "' + outputTemplate + '" https://www.youtube.com/watch?v=' + videoId;
+        
+        const fallbackChild = spawn(fallbackCommand, [], { shell: true });
+        
+        const fallbackJob = activeDownloads.get(jobId) || analyzingJob;
+        fallbackJob.status = 'downloading';
+        fallbackJob.childProcess = fallbackChild;
+        childProcessMap.set(jobId, fallbackChild);
+        
+        var fbOutput = '';
+        var fbErrorOutput = '';
+        
+        fallbackChild.stdout.on('data', function(data) {
+            fbOutput += data.toString();
+            parseProgress(fbOutput, jobId);
+        });
+        
+        fallbackChild.stderr.on('data', function(data) {
+            fbErrorOutput += data.toString();
+            parseProgress(fbErrorOutput, jobId);
+        });
+        
+        fallbackChild.on('close', function(code) {
+            const job = activeDownloads.get(jobId);
+            if (job) {
+                if (code === 0) {
+                    job.status = 'completed';
+                    job.progress = 100;
+                    markAsDownloaded(channelId, videoId);
+                } else {
+                    job.status = 'error';
+                    job.error = fbErrorOutput.substring(0, 500);
+                }
+                job.completedAt = new Date().toISOString();
+                childProcessMap.delete(jobId);
+                processDownloadQueue();
+            }
+        });
+        
+        fallbackChild.on('error', function(err) {
+            const job = activeDownloads.get(jobId);
+            if (job) {
+                job.status = 'error';
+                job.error = err.message;
+            }
+            processDownloadQueue();
         });
     }
 }
@@ -742,9 +883,17 @@ function executeDownload(reqBody, res, jobId) {
 app.post('/api/download', function(req, res) {
     const videoId = req.body.videoId;
     const title = req.body.title;
-    const quality = req.body.quality;
-    const format = req.body.format;
     const channelId = req.body.channelId;
+    
+    // Force auto-detection - ignore client quality/format settings
+    // Server will analyze formats and pick lowest MP4 automatically
+    const reqBody = {
+        videoId: videoId,
+        title: title,
+        channelId: channelId,
+        isLive: req.body.isLive,
+        outputFolder: req.body.outputFolder
+    };
     
     if (!videoId || !title) {
         return res.status(400).json({ error: 'Video ID and title are required' });
@@ -760,7 +909,7 @@ app.post('/api/download', function(req, res) {
     if (shouldQueue) {
         // Add to queue for sequential processing
         downloadQueue.push({
-            reqBody: req.body,
+            reqBody: reqBody,  // Use cleaned reqBody (no quality/format)
             res: res,
             jobId: jobId,
             queuedAt: new Date().toISOString()
@@ -794,7 +943,7 @@ app.post('/api/download', function(req, res) {
         processDownloadQueue();
     } else {
         // Execute immediately (batch mode or no active downloads)
-        executeDownload(req.body, res, jobId);
+        executeDownload(reqBody, res, jobId);  // Use cleaned reqBody
     }
 });
 

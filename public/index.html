@@ -1070,32 +1070,15 @@ label:has(select[id*='quality' i]) {
                     </div>
                 </div>
 
-                <!-- Video Quality - AUTO: Lowest Quality (Hidden) -->
-                <div class="setting-row" style="display: none;">
-                    <span>🎬 Video Quality</span>
-                    <select id="videoQuality">
-                        <option value="worst" selected>⚡ Lowest Quality (Auto)</option>
-                        <option value="best">Best Available</option>
-                        <option value="1080">1080p (Full HD)</option>
-                        <option value="720">720p (HD)</option>
-                        <option value="480">480p (SD)</option>
-                        <option value="360">360p (Low)</option>
-                    </select>
-                </div>
+                <!-- Video Quality & Format - FULLY AUTOMATED -->
                 <div class="setting-row">
                     <span>🎬 Video Quality</span>
-                    <span class="auto-quality-badge" style="font-size: 12px; padding: 6px 15px;">⚡ AUTO: LOWEST QUALITY</span>
+                    <span class="auto-quality-badge" style="font-size: 12px; padding: 6px 15px;">⚡ AUTO: LOWEST MP4 (Smart Detection)</span>
                 </div>
-
-                <!-- Download Format -->
+                
                 <div class="setting-row">
                     <span>📦 Download Format</span>
-                    <select id="downloadFormat">
-                        <option value="mp4">MP4 (Video)</option>
-                        <option value="webm">WebM (Video)</option>
-                        <option value="mp3">MP3 (Audio Only)</option>
-                        <option value="m4a">M4A (Audio Only)</option>
-                    </select>
+                    <span class="auto-quality-badge" style="font-size: 12px; padding: 6px 15px; background: linear-gradient(135deg, #2196F3 0%, #1976D2 100%);">📹 MP4 (Auto-Detected)</span>
                 </div>
 
                 <!-- Batch Delay -->
@@ -1545,15 +1528,12 @@ label:has(select[id*='quality' i]) {
             }
         }
 
-        // Download video
+        // Download video - Fully automated (server detects best format)
         async function downloadVideo(videoId, title, channelId, isLive) {
             if (!isServerConnected) {
                 showNotification('Server not connected', 'error');
                 return;
             }
-
-            const quality = document.getElementById('videoQuality').value;
-            const format = document.getElementById('downloadFormat').value;
 
             try {
                 const response = await fetch(`${API_BASE}/api/download`, {
@@ -1563,9 +1543,8 @@ label:has(select[id*='quality' i]) {
                         videoId,
                         title,
                         channelId,
-                        isLive,
-                        quality,
-                        format
+                        isLive
+                        // No quality/format - server auto-detects lowest MP4!
                     })
                 });
 
@@ -1573,7 +1552,7 @@ label:has(select[id*='quality' i]) {
 
                 if (!response.ok) throw new Error(data.error);
 
-                showNotification(`Downloading: ${title}`, 'success');
+                showNotification(`🔍 Analyzing formats: ${title}`, 'success');
                 
                 // Start tracking download
                 trackDownload(data.jobId, title);
@@ -1619,7 +1598,7 @@ label:has(select[id*='quality' i]) {
             }
             
             // Confirm before downloading all
-            const confirmMsg = `Download ${videos.length} ${onlyLives ? 'live stream(s)' : 'video(s)'} from "${channelName}"?\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}`;
+            const confirmMsg = `Download ${videos.length} ${onlyLives ? 'live stream(s)' : 'video(s)'} from "${channelName}"?\n\n⚡ Format: AUTO (Lowest MP4 - Smart Detection)`;
             if (!confirm(confirmMsg)) return;
             
             showNotification(`Starting batch download of ${videos.length} items...`, 'info');
@@ -1667,7 +1646,7 @@ label:has(select[id*='quality' i]) {
                 return;
             }
             
-            const confirmMsg = `Download ALL ${allVideos.length} items from "${channelName}"?\n\n• Videos: ${(channel.videos || []).filter(v => !v.downloaded).length}\n• Live Streams: ${(channel.liveVideos || []).filter(v => !v.downloaded).length}\n\nQuality: ${document.getElementById('videoQuality').value}\nFormat: ${document.getElementById('downloadFormat').value}\nDelay: ${document.getElementById('batchDelay').options[document.getElementById('batchDelay').selectedIndex].text}`;
+            const confirmMsg = `Download ALL ${allVideos.length} items from "${channelName}"?\n\n• Videos: ${(channel.videos || []).filter(v => !v.downloaded).length}\n• Live Streams: ${(channel.liveVideos || []).filter(v => !v.downloaded).length}\n\nQuality: AUTO (Lowest MP4)\nFormat: MP4 (Auto-Detected)\nDelay: ${document.getElementById('batchDelay').options[document.getElementById('batchDelay').selectedIndex].text}`;
             if (!confirm(confirmMsg)) return;
             
             showNotification(`🚀 Starting full channel download: ${allVideos.length} items...`, 'info');
@@ -1762,13 +1741,15 @@ label:has(select[id*='quality' i]) {
                                 <div class="progress-fill" style="width: ${d.progress}%"></div>
                             </div>
                             <div class="download-status">
-                                ${d.status === 'downloading' 
-                                    ? `${d.progress}%${d.speed ? ' • ' + d.speed : ''}${d.eta ? ' • ETA: ' + d.eta : ''}`
-                                    : d.status === 'completed' 
-                                        ? '✅ Completed'
-                                        : d.status === 'cancelled'
-                                            ? '⛔ Cancelled'
-                                            : '❌ Error'
+                                ${d.status === 'analyzing' 
+                                    ? '🔍 Analyzing formats...'
+                                    : d.status === 'downloading' 
+                                        ? `${d.progress}%${d.speed ? ' • ' + d.speed : ''}${d.eta ? ' • ETA: ' + d.eta : ''}`
+                                        : d.status === 'completed' 
+                                            ? '✅ Completed'
+                                            : d.status === 'cancelled'
+                                                ? '⛔ Cancelled'
+                                                : '❌ Error'
                                 }
                             </div>
                         </div>
