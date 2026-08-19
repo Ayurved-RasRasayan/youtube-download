@@ -17,12 +17,39 @@ app.use('/downloads', express.static(path.join(__dirname, '../downloads')));
 
 // Data storage
 const DATA_FILE = path.join(__dirname, 'data.json');
-const DOWNLOADS_DIR = path.join(__dirname, '../downloads');
+const DEFAULT_DOWNLOADS_DIR = path.join(__dirname, '../downloads');
+let DOWNLOADS_DIR = DEFAULT_DOWNLOADS_DIR;
+
+// Download queue for sequential mode
+downloadQueue = [];
+let isProcessingQueue = false;
+let currentDownloadMode = 'batch'; // 'batch' or 'sequential'
+let maxConcurrentDownloads = 3; // For batch mode
 
 // Ensure downloads directory exists
-if (!fs.existsSync(DOWNLOADS_DIR)) {
-    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+function ensureDownloadsDir() {
+    if (!fs.existsSync(DOWNLOADS_DIR)) {
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+    }
 }
+ensureDownloadsDir();
+
+// Load user settings from data
+function loadSettings() {
+    if (appData.settings) {
+        if (appData.settings.outputFolder) {
+            DOWNLOADS_DIR = appData.settings.outputFolder;
+            ensureDownloadsDir();
+        }
+        if (appData.settings.downloadMode) {
+            currentDownloadMode = appData.settings.downloadMode;
+        }
+        if (appData.settings.maxConcurrent) {
+            maxConcurrentDownloads = appData.settings.maxConcurrent;
+        }
+    }
+}
+loadSettings();
 
 // Load or initialize data
 function loadData() {
@@ -182,7 +209,117 @@ app.get('/api/health', function(req, res) {
         status: 'ok',
         ytDlpInstalled: checkYtDlp(),
         channels: appData.channels.length,
-        activeDownloads: activeDownloads.size
+        activeDownloads: activeDownloads.size,
+        downloadsDir: DOWNLOADS_DIR,
+        downloadMode: currentDownloadMode
+    });
+});
+
+// Get/Update settings
+app.get('/api/settings', function(req, res) {
+    res.json({
+        outputFolder: DOWNLOADS_DIR,
+        defaultFolder: DEFAULT_DOWNLOADS_DIR,
+        downloadMode: currentDownloadMode,
+        maxConcurrent: maxConcurrentDownloads,
+        allSettings: appData.settings || {}
+    });
+});
+
+app.post('/api/settings', function(req, res) {
+    const { outputFolder, downloadMode, maxConcurrent } = req.body;
+    
+    // Update output folder
+    if (outputFolder !== undefined && outputFolder !== null && outputFolder.trim() !== '') {
+        const newDir = path.resolve(outputFolder.trim());
+        try {
+            if (!fs.existsSync(newDir)) {
+                fs.mkdirSync(newDir, { recursive: true });
+            }
+            DOWNLOADS_DIR = newDir;
+            appData.settings.outputFolder = newDir;
+        } catch (error) {
+            return res.status(400).json({ error: 'Invalid output folder path: ' + error.message });
+        }
+    } else if (outputFolder === '' || outputFolder === null) {
+        // Reset to default
+        DOWNLOADS_DIR = DEFAULT_DOWNLOADS_DIR;
+        appData.settings.outputFolder = DEFAULT_DOWNLOADS_DIR;
+        ensureDownloadsDir();
+    }
+    
+    // Update download mode
+    if (downloadMode === 'sequential' || downloadMode === 'batch') {
+        currentDownloadMode = downloadMode;
+        appData.settings.downloadMode = downloadMode;
+    }
+    
+    // Update max concurrent downloads (for batch mode)
+    if (maxConcurrent !== undefined && !isNaN(maxConcurrent) && maxConcurrent >= 1) {
+        maxConcurrentDownloads = parseInt(maxConcurrent);
+        appData.settings.maxConcurrent = maxConcurrentDownloads;
+    }
+    
+    saveData(appData);
+    
+    res.json({ 
+        success: true, 
+        message: 'Settings updated',
+        settings: {
+            outputFolder: DOWNLOADS_DIR,
+            downloadMode: currentDownloadMode,
+            maxConcurrent: maxConcurrentDownloads
+        }
+    });
+});
+
+// Validate output folder (without saving)
+app.post('/api/settings/validate-folder', function(req, res) {
+    const { folderPath } = req.body;
+    
+    if (!folderPath || !folderPath.trim()) {
+        return res.status(400).json({ error: 'Folder path is required' });
+    }
+    
+    const resolvedPath = path.resolve(folderPath.trim());
+    let exists = false;
+    let accessible = false;
+    let writable = false;
+    
+    try {
+        exists = fs.existsSync(resolvedPath);
+        if (!exists) {
+            // Check if parent is writable (can create)
+            const parentDir = path.dirname(resolvedPath);
+            accessible = fs.existsSync(parentDir);
+            if (accessible) {
+                try {
+                    fs.accessSync(parentDir, fs.constants.W_OK);
+                    writable = true;
+                } catch (e) {
+                    writable = false;
+                }
+            }
+        } else {
+            accessible = true;
+            try {
+                fs.accessSync(resolvedPath, fs.constants.W_OK);
+                writable = true;
+            } catch (e) {
+                writable = false;
+            }
+        }
+    } catch (error) {
+        return res.status(400).json({ error: 'Invalid path: ' + error.message });
+    }
+    
+    res.json({
+        valid: writable,
+        path: resolvedPath,
+        exists: exists,
+        accessible: accessible,
+        writable: writable,
+        message: exists ? (writable ? 'Folder is writable' : 'Folder is not writable') : (writable ? 'Folder will be created' : 'Cannot create folder in parent directory')
     });
 });
 
@@ -320,25 +457,79 @@ app.delete('/api/channels', function(req, res) {
     res.json({ success: true, message: 'All channels cleared' });
 });
 
-// Download video
-app.post('/api/download', function(req, res) {
-    const videoId = req.body.videoId;
-    const title = req.body.title;
-    const quality = req.body.quality;
-    const format = req.body.format;
-    const channelId = req.body.channelId;
-    
-    if (!videoId || !title) {
-        return res.status(400).json({ error: 'Video ID and title are required' });
+// Process download queue (for sequential mode)
+function processDownloadQueue() {
+    if (isProcessingQueue || downloadQueue.length === 0) {
+        return;
     }
+    
+    isProcessingQueue = true;
+    
+    function processNext() {
+        if (downloadQueue.length === 0) {
+            isProcessingQueue = false;
+            return;
+        }
+        
+        // In sequential mode, only process one at a time
+        // In batch mode, process up to maxConcurrentDownloads
+        const slotsAvailable = currentDownloadMode === 'sequential' ? 1 : (maxConcurrentDownloads - getActiveNonQueuedCount());
+        
+        if (slotsAvailable <= 0) {
+            // Wait and try again
+            setTimeout(processNext, 1000);
+            return;
+        }
+        
+        const itemsToProcess = downloadQueue.splice(0, Math.min(slotsAvailable, downloadQueue.length));
+        
+        itemsToProcess.forEach(queueItem => {
+            executeDownload(queueItem.reqBody, queueItem.res, queueItem.jobId);
+        });
+        
+        // Continue processing after a short delay if more items in queue
+        if (downloadQueue.length > 0) {
+            setTimeout(processNext, currentDownloadMode === 'sequential' ? 2000 : 500);
+        } else {
+            isProcessingQueue = false;
+        }
+    }
+    
+    processNext();
+}
 
-    // Create download job
-    const jobId = uuidv4();
+// Count active downloads that are not queued
+function getActiveNonQueuedCount() {
+    let count = 0;
+    activeDownloads.forEach(function(job) {
+        if (job.status === 'downloading') {
+            count++;
+        }
+    });
+    return count;
+}
+
+// Execute the actual download
+function executeDownload(reqBody, res, jobId) {
+    const videoId = reqBody.videoId;
+    const title = reqBody.title;
+    const quality = reqBody.quality;
+    const format = reqBody.format;
+    const channelId = reqBody.channelId;
+    const customOutputFolder = reqBody.outputFolder; // Allow per-request override
+    
+    const effectiveDownloadsDir = customOutputFolder || DOWNLOADS_DIR;
+    
+    // Create download job if not already created
+    if (!jobId) {
+        jobId = uuidv4();
+    }
+    
     const safeTitle = title.replace(/[^a-z0-9]/gi, '_').substring(0, 100);
-    const folderPath = path.join(DOWNLOADS_DIR, sanitizeFilename(channelId || 'general'));
+    const folderPath = path.join(effectiveDownloadsDir, sanitizeFilename(channelId || 'general'));
     
     // Create subfolder for videos/lives
-    const subFolder = req.body.isLive ? 'Live Streams' : 'Videos';
+    const subFolder = reqBody.isLive ? 'Live Streams' : 'Videos';
     const finalPath = path.join(folderPath, subFolder);
     
     // Ensure directories exist
@@ -394,7 +585,9 @@ app.post('/api/download', function(req, res) {
         progress: 0,
         speed: '',
         eta: '',
-        startedAt: new Date().toISOString()
+        startedAt: new Date().toISOString(),
+        mode: currentDownloadMode,
+        outputPath: finalPath
     };
 
     activeDownloads.set(jobId, downloadJob);
@@ -429,6 +622,9 @@ app.post('/api/download', function(req, res) {
                 job.error = errorOutput.substring(0, 500);
             }
             job.completedAt = new Date().toISOString();
+            
+            // Process next in queue after completion
+            processDownloadQueue();
         }
     });
 
@@ -438,13 +634,119 @@ app.post('/api/download', function(req, res) {
             job.status = 'error';
             job.error = err.message;
         }
+        processDownloadQueue();
     });
 
+    // Send response if provided
+    if (res && !res.headersSent) {
+        res.json({ 
+            success: true, 
+            jobId: jobId,
+            message: currentDownloadMode === 'sequential' ? 'Download queued (sequential mode)' : 'Download started',
+            outputPath: finalPath,
+            mode: currentDownloadMode,
+            queuePosition: downloadQueue.length + 1
+        });
+    }
+}
+
+// Download video (main endpoint)
+app.post('/api/download', function(req, res) {
+    const videoId = req.body.videoId;
+    const title = req.body.title;
+    const quality = req.body.quality;
+    const format = req.body.format;
+    const channelId = req.body.channelId;
+    
+    if (!videoId || !title) {
+        return res.status(400).json({ error: 'Video ID and title are required' });
+    }
+
+    // Create job ID
+    const jobId = uuidv4();
+    
+    // Check if we should queue this download (sequential mode with active downloads)
+    const activeCount = getActiveNonQueuedCount();
+    const shouldQueue = currentDownloadMode === 'sequential' && activeCount >= 1;
+    
+    if (shouldQueue) {
+        // Add to queue for sequential processing
+        downloadQueue.push({
+            reqBody: req.body,
+            res: res,
+            jobId: jobId,
+            queuedAt: new Date().toISOString()
+        });
+        
+        // Create a pending job entry
+        const pendingJob = {
+            id: jobId,
+            videoId: videoId,
+            title: title,
+            status: 'queued',
+            progress: 0,
+            speed: 'Waiting...',
+            eta: 'In queue',
+            startedAt: new Date().toISOString(),
+            mode: 'sequential',
+            queuePosition: downloadQueue.length
+        };
+        activeDownloads.set(jobId, pendingJob);
+        
+        res.json({ 
+            success: true, 
+            jobId: jobId,
+            message: 'Download queued (position #' + downloadQueue.length + ')',
+            mode: 'sequential',
+            queuePosition: downloadQueue.length,
+            queueSize: downloadQueue.length
+        });
+        
+        // Start queue processor if not running
+        processDownloadQueue();
+    } else {
+        // Execute immediately (batch mode or no active downloads)
+        executeDownload(req.body, res, jobId);
+    }
+});
+
+// Get download queue status
+app.get('/api/download-queue', function(req, res) {
+    res.json({
+        queue: downloadQueue.map(function(item, index) {
+            return {
+                position: index + 1,
+                jobId: item.jobId,
+                title: item.reqBody.title,
+                queuedAt: item.queuedAt
+            };
+        }),
+        queueSize: downloadQueue.length,
+        isProcessing: isProcessingQueue,
+        mode: currentDownloadMode,
+        activeDownloads: getActiveNonQueuedCount()
+    });
+});
+
+// Clear download queue
+app.delete('/api/download-queue', function(req, res) {
+    const clearedCount = downloadQueue.length;
+    
+    // Remove queued jobs from active downloads
+    downloadQueue.forEach(function(item) {
+        const job = activeDownloads.get(item.jobId);
+        if (job && job.status === 'queued') {
+            activeDownloads.delete(item.jobId);
+        }
+    });
+    
+    downloadQueue = [];
+    isProcessingQueue = false;
+    
     res.json({ 
         success: true, 
-        jobId: jobId,
-        message: 'Download started',
-        outputPath: finalPath
+        message: 'Queue cleared', 
+        clearedCount: clearedCount 
     });
 });
 

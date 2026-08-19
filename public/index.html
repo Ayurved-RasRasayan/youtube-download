@@ -582,6 +582,152 @@
             border-bottom: none;
         }
 
+        /* Output Folder Setting */
+        .folder-input-group {
+            display: flex;
+            gap: 8px;
+            flex: 1;
+            max-width: 300px;
+        }
+
+        .folder-input-group input {
+            flex: 1;
+            padding: 8px 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+
+        .folder-input-group input:focus {
+            outline: none;
+            border-color: #ff0000;
+        }
+
+        .folder-input-group button {
+            padding: 8px 12px;
+            background: rgba(255,0,0,0.2);
+            border: 1px solid rgba(255,0,0,0.4);
+            border-radius: 6px;
+            color: #ff4444;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+
+        .folder-input-group button:hover {
+            background: rgba(255,0,0,0.3);
+        }
+
+        .folder-status {
+            font-size: 0.8rem;
+            margin-top: 5px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            display: none;
+        }
+
+        .folder-status.valid {
+            display: block;
+            color: #00c853;
+            background: rgba(0,200,83,0.1);
+        }
+
+        .folder-status.invalid {
+            display: block;
+            color: #ff0000;
+            background: rgba(255,0,0,0.1);
+        }
+
+        /* Download Mode Selector */
+        .mode-selector {
+            display: flex;
+            gap: 8px;
+        }
+
+        .mode-option {
+            padding: 10px 16px;
+            background: rgba(0,0,0,0.3);
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-align: center;
+            min-width: 120px;
+        }
+
+        .mode-option:hover {
+            border-color: rgba(255,255,255,0.4);
+            background: rgba(0,0,0,0.4);
+        }
+
+        .mode-option.active {
+            border-color: #ff0000;
+            background: rgba(255,0,0,0.15);
+        }
+
+        .mode-option .mode-icon {
+            font-size: 1.5rem;
+            margin-bottom: 4px;
+        }
+
+        .mode-option .mode-label {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .mode-option .mode-desc {
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.5);
+            margin-top: 2px;
+        }
+
+        /* Queue Info */
+        .queue-info {
+            background: linear-gradient(135deg, rgba(33,150,243,0.1), rgba(33,150,243,0.05));
+            border: 1px solid rgba(33,150,243,0.3);
+            border-radius: 8px;
+            padding: 12px;
+            margin-top: 15px;
+            display: none;
+        }
+
+        .queue-info.show {
+            display: block;
+        }
+
+        .queue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .queue-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            font-size: 0.85rem;
+        }
+
+        .queue-position {
+            background: #2196F3;
+            color: #fff;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            font-weight: bold;
+        }
+
         /* Downloads Panel */
         .downloads-panel {
             background: rgba(255,255,255,0.05);
@@ -775,20 +921,65 @@
             </div>
 
             <div class="settings-panel" id="settingsPanel">
-                <h3 style="margin-bottom: 15px;">Download Settings</h3>
+                <h3 style="margin-bottom: 15px;">⚙️ Download Settings</h3>
+                
+                <!-- Output Folder Setting -->
+                <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
+                    <span style="margin-bottom: 8px;">📁 Output Folder for All Downloads</span>
+                    <div class="folder-input-group" style="width: 100%; max-width: 100%;">
+                        <input type="text" id="outputFolder" placeholder="/path/to/downloads/folder..." 
+                               value="" style="flex: 1;">
+                        <button onclick="validateOutputFolder()">✓ Validate</button>
+                        <button onclick="resetOutputFolder()" title="Reset to default">↺ Reset</button>
+                        <button onclick="saveSettings()" style="background: rgba(0,200,83,0.2); border-color: rgba(0,200,83,0.4); color: #00c853;">💾 Save</button>
+                    </div>
+                    <div id="folderStatus" class="folder-status"></div>
+                    <div style="font-size: 0.8rem; color: rgba(255,255,255,0.5); margin-top: 5px;">
+                        Current: <code id="currentFolderDisplay" style="color: #ffc107;">Loading...</code>
+                    </div>
+                </div>
+
+                <!-- Download Mode Setting -->
+                <div class="setting-row" style="flex-direction: column; align-items: flex-start;">
+                    <span style="margin-bottom: 10px;">🔄 Download Mode</span>
+                    <div class="mode-selector">
+                        <div class="mode-option active" id="modeBatch" onclick="setDownloadMode('batch')">
+                            <div class="mode-icon">⚡</div>
+                            <div class="mode-label">Batch</div>
+                            <div class="mode-desc">Multiple at once</div>
+                        </div>
+                        <div class="mode-option" id="modeSequential" onclick="setDownloadMode('sequential')">
+                            <div class="mode-icon">📋</div>
+                            <div class="mode-label">Sequential</div>
+                            <div class="mode-desc">One at a time</div>
+                        </div>
+                    </div>
+                    <div id="batchOptions" style="width: 100%; margin-top: 10px;">
+                        <label style="display: flex; align-items: center; gap: 8px; font-size: 0.9rem; color: rgba(255,255,255,0.7);">
+                            Max concurrent downloads:
+                            <input type="number" id="maxConcurrent" value="3" min="1" max="10" 
+                                   style="width: 60px; padding: 4px 8px; background: rgba(0,0,0,0.3); 
+                                          border: 1px solid rgba(255,255,255,0.2); border-radius: 4px; color: #fff;">
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Video Quality -->
                 <div class="setting-row">
-                    <span>Video Quality</span>
+                    <span>🎬 Video Quality</span>
                     <select id="videoQuality">
                         <option value="best">Best Available</option>
                         <option value="1080">1080p (Full HD)</option>
                         <option value="720">720p (HD)</option>
                         <option value="480">480p (SD)</option>
                         <option value="360">360p (Low)</option>
-                        <option value="worst" style="color: #ff9800;">⚡ Lowest Quality (Smallest File)</option>
+                        <option value="worst" style="color: #ff9800;">⚡ Lowest Quality</option>
                     </select>
                 </div>
+
+                <!-- Download Format -->
                 <div class="setting-row">
-                    <span>Download Format</span>
+                    <span>📦 Download Format</span>
                     <select id="downloadFormat">
                         <option value="mp4">MP4 (Video)</option>
                         <option value="webm">WebM (Video)</option>
@@ -796,8 +987,10 @@
                         <option value="m4a">M4A (Audio Only)</option>
                     </select>
                 </div>
+
+                <!-- Batch Delay -->
                 <div class="setting-row">
-                    <span>Batch Download Delay</span>
+                    <span>⏱️ Batch Download Delay</span>
                     <select id="batchDelay">
                         <option value="0">No Delay (Fastest)</option>
                         <option value="2000" selected>2 seconds between downloads</option>
@@ -805,6 +998,8 @@
                         <option value="10000">10 seconds between downloads</option>
                     </select>
                 </div>
+
+                <!-- Skip Downloaded -->
                 <div class="setting-row">
                     <span>Skip Downloaded Videos?</span>
                     <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
@@ -812,10 +1007,23 @@
                         <span style="font-size: 0.9rem; color: rgba(255,255,255,0.7);">Don't re-download already downloaded videos</span>
                     </label>
                 </div>
+
+                <!-- Download Queue Info -->
+                <div class="queue-info" id="queueInfo">
+                    <div class="queue-header">
+                        <strong>📋 Download Queue (Sequential Mode)</strong>
+                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 0.8rem;" 
+                                onclick="clearDownloadQueue()">Clear Queue</button>
+                    </div>
+                    <div id="queueList"></div>
+                </div>
             </div>
 
             <div class="downloads-panel" id="downloadsPanel">
-                <h3 style="margin-bottom: 15px;">📥 Active Downloads</h3>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <h3 style="margin: 0;">📥 Active Downloads</h3>
+                    <span id="downloadModeBadge" style="font-size: 0.8rem; padding: 4px 10px; border-radius: 12px; background: rgba(255,0,0,0.2); color: #ff4444;">Batch Mode</span>
+                </div>
                 <div id="downloadsList">
                     <p style="color: rgba(255,255,255,0.5);">No active downloads</p>
                 </div>
@@ -913,12 +1121,213 @@
         // Toggle panels
         function toggleSettings() {
             document.getElementById('settingsPanel').classList.toggle('open');
+            if (document.getElementById('settingsPanel').classList.contains('open')) {
+                loadCurrentSettings();
+            }
         }
 
         function toggleDownloads() {
             document.getElementById('downloadsPanel').classList.toggle('open');
             updateDownloadsList();
+            updateQueueDisplay();
         }
+
+        // ============ NEW SETTINGS FUNCTIONS ============
+        
+        // Load current settings from server
+        async function loadCurrentSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`);
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Update output folder display
+                    document.getElementById('outputFolder').value = data.outputFolder || '';
+                    document.getElementById('currentFolderDisplay').textContent = data.outputFolder || 'Default folder';
+                    
+                    // Update download mode UI
+                    updateDownloadModeUI(data.downloadMode || 'batch');
+                    
+                    // Update max concurrent
+                    if (data.maxConcurrent) {
+                        document.getElementById('maxConcurrent').value = data.maxConcurrent;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load settings:', error);
+            }
+        }
+        
+        // Update download mode UI
+        function updateDownloadModeUI(mode) {
+            const batchEl = document.getElementById('modeBatch');
+            const sequentialEl = document.getElementById('modeSequential');
+            const batchOptions = document.getElementById('batchOptions');
+            const badge = document.getElementById('downloadModeBadge');
+            
+            if (mode === 'sequential') {
+                batchEl.classList.remove('active');
+                sequentialEl.classList.add('active');
+                batchOptions.style.display = 'none';
+                badge.textContent = 'Sequential Mode';
+                badge.style.background = 'rgba(33,150,243,0.2)';
+                badge.style.color = '#64B5F6';
+                document.getElementById('queueInfo').classList.add('show');
+            } else {
+                batchEl.classList.add('active');
+                sequentialEl.classList.remove('active');
+                batchOptions.style.display = 'block';
+                badge.textContent = 'Batch Mode';
+                badge.style.background = 'rgba(255,0,0,0.2)';
+                badge.style.color = '#ff4444';
+                document.getElementById('queueInfo').classList.remove('show');
+            }
+        }
+        
+        // Set download mode
+        async function setDownloadMode(mode) {
+            updateDownloadModeUI(mode);
+            await saveSettings();
+            showNotification(`Download mode set to: ${mode}`, 'info');
+        }
+        
+        // Validate output folder
+        async function validateOutputFolder() {
+            const folderPath = document.getElementById('outputFolder').value.trim();
+            const statusEl = document.getElementById('folderStatus');
+            
+            if (!folderPath) {
+                statusEl.className = 'folder-status invalid';
+                statusEl.textContent = '⚠️ Please enter a folder path';
+                return;
+            }
+            
+            statusEl.className = 'folder-status';
+            statusEl.textContent = 'Validating...';
+            statusEl.style.display = 'block';
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/settings/validate-folder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath })
+                });
+                
+                const data = await response.json();
+                
+                if (data.valid) {
+                    statusEl.className = 'folder-status valid';
+                    statusEl.textContent = `✅ ${data.message} (${data.path})`;
+                } else {
+                    statusEl.className = 'folder-status invalid';
+                    statusEl.textContent = `❌ ${data.message}`;
+                }
+            } catch (error) {
+                statusEl.className = 'folder-status invalid';
+                statusEl.textContent = `❌ Error: ${error.message}`;
+            }
+        }
+        
+        // Reset output folder to default
+        async function resetOutputFolder() {
+            document.getElementById('outputFolder').value = '';
+            
+            const statusEl = document.getElementById('folderStatus');
+            statusEl.className = 'folder-status valid';
+            statusEl.textContent = '✅ Will reset to default folder on save';
+            statusEl.style.display = 'block';
+            
+            await saveSettings();
+            await loadCurrentSettings();
+            showNotification('Output folder reset to default', 'info');
+        }
+        
+        // Save all settings to server
+        async function saveSettings() {
+            const outputFolder = document.getElementById('outputFolder').value.trim();
+            const downloadMode = document.getElementById('modeSequential').classList.contains('active') ? 'sequential' : 'batch';
+            const maxConcurrent = parseInt(document.getElementById('maxConcurrent').value) || 3;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        outputFolder: outputFolder || null,
+                        downloadMode,
+                        maxConcurrent
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showNotification('✅ Settings saved successfully!', 'success');
+                    document.getElementById('currentFolderDisplay').textContent = data.settings.outputFolder || 'Default folder';
+                } else {
+                    showNotification(`Error: ${data.error}`, 'error');
+                }
+            } catch (error) {
+                showNotification(`Error saving settings: ${error.message}`, 'error');
+            }
+        }
+        
+        // Clear download queue
+        async function clearDownloadQueue() {
+            if (!confirm('Clear all queued downloads? Currently downloading items will continue.')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/download-queue`, { method: 'DELETE' });
+                const data = await response.json();
+                showNotification(data.message, 'success');
+                updateQueueDisplay();
+            } catch (error) {
+                showNotification('Error clearing queue', 'error');
+            }
+        }
+        
+        // Update queue display
+        async function updateQueueDisplay() {
+            try {
+                const response = await fetch(`${API_BASE}/api/download-queue`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const queueList = document.getElementById('queueList');
+                    
+                    if (data.queueSize === 0) {
+                        queueList.innerHTML = '<p style="color: rgba(255,255,255,0.5); font-size: 0.85rem;">Queue is empty</p>';
+                    } else {
+                        queueList.innerHTML = data.queue.map(item => `
+                            <div class="queue-item">
+                                <span class="queue-position">${item.position}</span>
+                                <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.title}">${item.title}</span>
+                                <span style="color: rgba(255,255,255,0.5); font-size: 0.75rem;">Queued</span>
+                            </div>
+                        `).join('');
+                    }
+                    
+                    // Show/hide queue info based on mode and content
+                    if (data.mode === 'sequential' && data.queueSize > 0) {
+                        document.getElementById('queueInfo').classList.add('show');
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to update queue:', error);
+            }
+        }
+        
+        // Initialize settings on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load current settings after a short delay to ensure server is ready
+            setTimeout(loadCurrentSettings, 1000);
+            
+            // Update queue every 3 seconds when downloads panel is open
+            setInterval(() => {
+                if (document.getElementById('downloadsPanel').classList.contains('open')) {
+                    updateQueueDisplay();
+                }
+            }, 3000);
+        });
 
         // Load channel
         async function loadChannel() {
