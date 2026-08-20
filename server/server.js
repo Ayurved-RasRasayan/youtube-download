@@ -772,13 +772,18 @@ app.post('/api/download', async function(req, res) {
     
     const safeTitle = title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 200);
     
+    // FIX: Build format options that work with fixed output paths
+    // Key insight: When using -o "fixed_name.ext", you CANNOT use formats that require merging
+    // Solution: Use formats that are already combined, or download to temp then rename
+    
     let formatExt = 'mp4';
     let formatOptions = '';
+    let mergeOption = '';
     
     switch (format) {
         case 'mp3':
             formatExt = 'mp3';
-            formatOptions = '-x --audio-format mp3';
+            formatOptions = '-x --audio-format mp3 --audio-quality 0';
             break;
         case 'm4a':
             formatExt = 'm4a';
@@ -786,19 +791,21 @@ app.post('/api/download', async function(req, res) {
             break;
         case 'webm':
             formatExt = 'webm';
-            formatOptions = '--format bestaudio/best --merge-output-format webm';
+            formatOptions = 'bestaudio[ext=webm]/bestaudio';
+            mergeOption = '--merge-output-format webm';
             break;
         default:
-            // SIMPLIFIED: Use 'best' format to avoid merge errors
-            // This is more reliable than trying to merge video+audio
+            // MP4 video - CRITICAL FIX: Use pre-merged format to avoid "Fixed output name" error
             formatExt = 'mp4';
             
             if (quality && quality !== 'best' && quality !== '1080') {
-                // For lower qualities, use simple format selector
-                formatOptions = `--format "best[height<=${quality}]/best"`;
+                // For specific quality: prefer already-merged MP4, fallback to best matching
+                formatOptions = `best[height<=${quality}[ext=mp4]]/best[height<=${quality}/ext=mp4]/best[height<=${quality}]`;
             } else {
-                // Default: just get the best available (let yt-dlp decide)
-                formatOptions = '--format best';
+                // Default: Prefer pre-merged MP4 formats (no merging needed!)
+                // This avoids the "more than one file to download" error
+                formatOptions = 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+                mergeOption = '--merge-output-format mp4';
             }
     }
     
@@ -809,7 +816,17 @@ app.post('/api/download', async function(req, res) {
         ? `--cookies "${AUTH_CONFIG.cookieFilePath}"` 
         : '--extractor-args "youtube:player_client=web"';
     
-    const command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format ${formatOptions} --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+    // FIX: When merging is needed, download to temp directory first, then move to finalPath
+    // This avoids "Fixed output name but more than one file to download" error
+    let command;
+    if (mergeOption) {
+        // Download to temp file in same directory, let yt-dlp choose the name
+        const tempPattern = path.join(videoDir, `${safeTitle}.f%(format_id)s.%(ext)s`);
+        command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${formatOptions}" ${mergeOption} --no-check-certificate -o "${tempPattern}" "https://www.youtube.com/watch?v=${videoId}"`;
+    } else {
+        // No merging needed - safe to use direct output path
+        command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${formatOptions}" --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+    }
     
     const downloadJob = {
         jobId: jobId,
@@ -835,9 +852,29 @@ app.post('/api/download', async function(req, res) {
             const result = await executeSingleDownload(command, jobId, videoId, title, channelId, finalPath);
             
             if (result.success) {
-                console.log('[Download] Success:', title);
+                // FIX: If we used merging, the file might be at a temp path - rename it
+                if (mergeOption && fs.existsSync(videoDir)) {
+                    try {
+                        // Find the downloaded file (look for files matching our pattern)
+                        const files = fs.readdirSync(videoDir).filter(f => 
+                            f.startsWith(safeTitle) && (f.endsWith('.mp4') || f.endsWith('.webm') || f.endsWith('.m4a'))
+                        );
+                        
+                        if (files.length > 0) {
+                            const downloadedFile = path.join(videoDir, files[0]);
+                            // Only rename if it's not already at the expected path
+                            if (downloadedFile !== finalPath && !fs.existsSync(finalPath)) {
+                                fs.renameSync(downloadedFile, finalPath);
+                                console.log('[Download] ✅ Renamed to:', finalPath);
+                            }
+                        }
+                    } catch (renameErr) {
+                        console.warn('[Download] ⚠️ Rename failed (file may already be correct):', renameErr.message);
+                    }
+                }
+                console.log('[Download] ✅ Success:', title);
             } else {
-                console.error('[Download] Failed:', title);
+                console.error('[Download] ❌ Failed:', title);
             }
         } catch (err) {
             console.error('[Download] Exception:', err.message);
