@@ -276,6 +276,74 @@
             margin-top: 30px;
         }
 
+        /* Settings Panel */
+        .settings-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border: 2px solid #e0e0e0;
+        }
+        
+        .setting-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        }
+        
+        .setting-label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 14px;
+        }
+        
+        .setting-input-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        
+        .setting-input {
+            flex: 1;
+            padding: 10px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: 'Courier New', monospace;
+            transition: border-color 0.3s;
+        }
+        
+        .setting-input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .setting-info {
+            margin-top: 8px;
+            padding: 8px 12px;
+            background: #e3f2fd;
+            border-radius: 5px;
+            font-size: 12px;
+            color: #1976d2;
+            word-break: break-all;
+        }
+        
+        .setting-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 15px;
+            background: #f1f8e9;
+            border-radius: 6px;
+            font-size: 13px;
+            color: #33691e;
+        }
+        
+        .status-icon {
+            font-size: 18px;
+        }
+
         .queue-item {
             display: flex;
             justify-content: space-between;
@@ -345,6 +413,65 @@
             </div>
         </div>
 
+        <!-- Settings Panel -->
+        <div class="card settings-card">
+            <div class="card-header">
+                <h2 class="card-title">⚙️ Settings</h2>
+                <button class="btn-secondary btn-small" onclick="toggleSettings()">
+                    <span id="settingsToggleIcon">▼</span> Show/Hide
+                </button>
+            </div>
+            
+            <div id="settingsContent" style="display: none;">
+                <!-- Download Folder Setting -->
+                <div class="setting-group">
+                    <label class="setting-label">
+                        📁 Download Folder
+                    </label>
+                    <div class="setting-input-group">
+                        <input type="text" 
+                               id="downloadsDirInput" 
+                               placeholder="C:\Users\YourName\Downloads\YouTube"
+                               class="setting-input">
+                        <button class="btn-primary btn-small" onclick="openFolderPicker()" title="Browse folder">
+                            📂 Browse
+                        </button>
+                        <button class="btn-success btn-small" onclick="saveDownloadFolder()" title="Save setting">
+                            💾 Save
+                        </button>
+                    </div>
+                    <div class="setting-info" id="folderInfo">
+                        Loading...
+                    </div>
+                </div>
+
+                <!-- Quick Folder Presets -->
+                <div class="setting-group">
+                    <label class="setting-label">🚀 Quick Set:</label>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button class="btn-secondary btn-small" onclick="setFolderPreset('downloads')">
+                            📥 Downloads (Default)
+                        </button>
+                        <button class="btn-secondary btn-small" onclick="setFolderPreset('desktop')">
+                            🖥️ Desktop
+                        </button>
+                        <button class="btn-secondary btn-small" onclick="setFolderPreset('videos')">
+                            🎬 Videos
+                        </button>
+                        <button class="btn-secondary btn-small" onclick="setFolderPreset('documents')">
+                            📄 Documents
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Current Status -->
+                <div class="setting-status" id="folderStatus">
+                    <span class="status-icon">ℹ️</span>
+                    <span>Click "Show/Hide" to view current download location</span>
+                </div>
+            </div>
+        </div>
+
         <!-- Videos List -->
         <div class="card" id="videosCard" style="display: none;">
             <div class="card-header">
@@ -409,6 +536,184 @@
                 alert.classList.remove('show');
             }, 5000);
         }
+
+        // ==================== SETTINGS FUNCTIONS ====================
+        
+        // Toggle settings panel visibility
+        let settingsVisible = false;
+        function toggleSettings() {
+            const content = document.getElementById('settingsContent');
+            const icon = document.getElementById('settingsToggleIcon');
+            
+            settingsVisible = !settingsVisible;
+            content.style.display = settingsVisible ? 'block' : 'none';
+            icon.textContent = settingsVisible ? '▲' : '▼';
+            
+            if (settingsVisible) {
+                loadSettings();
+            }
+        }
+        
+        // Load current settings from server
+        async function loadSettings() {
+            try {
+                const response = await fetch(`${API_BASE}/api/settings`);
+                const result = await response.json();
+                
+                if (result.success && result.data) {
+                    const data = result.data;
+                    
+                    // Update input field
+                    document.getElementById('downloadsDirInput').value = data.currentDownloadsDir || '';
+                    
+                    // Update info display
+                    const infoHtml = `
+                        <strong>Current:</strong> ${data.resolvedPath || data.currentDownloadsDir}<br>
+                        <strong>Status:</strong> ${data.dirExists ? '✅ Exists' : '⚠️ Will be created'} | 
+                        📁 ${data.fileCount || 0} files
+                        ${data.recentFiles && data.recentFiles.length > 0 ? 
+                            '<br><strong>Recent:</strong> ' + data.recentFiles.map(f => f.name).join(', ') 
+                        : ''}
+                    `;
+                    document.getElementById('folderInfo').innerHTML = infoHtml;
+                    
+                    // Update status
+                    document.getElementById('folderStatus').innerHTML = `
+                        <span class="status-icon">✅</span>
+                        <span>Download folder: <strong>${data.currentDownloadsDir}</strong></span>
+                    `;
+                }
+                
+            } catch (error) {
+                console.error('[Settings] Error loading:', error);
+                document.getElementById('folderInfo').innerHTML = 'Error loading settings';
+            }
+        }
+        
+        // Save new download folder
+        async function saveDownloadFolder() {
+            const newFolder = document.getElementById('downloadsDirInput').value.trim();
+            
+            if (!newFolder) {
+                showAlert('Please enter a folder path', 'warning');
+                return;
+            }
+            
+            // Show saving state
+            const statusEl = document.getElementById('folderStatus');
+            statusEl.innerHTML = '<span class="status-icon">⏳</span><span>Saving...</span>';
+            
+            try {
+                // Test the folder first
+                const testResponse = await fetch(`${API_BASE}/api/settings/test-folder`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folderPath: newFolder })
+                });
+                
+                const testResult = await testResponse.json();
+                
+                if (!testResult.data?.canUse) {
+                    throw new Error(testResult.error || 'Folder is not writable');
+                }
+                
+                // Save to settings
+                const response = await fetch(`${API_BASE}/api/settings`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ downloadsDir: newFolder })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showAlert(`✅ Download folder changed to: ${newFolder}`, 'success');
+                    statusEl.innerHTML = '<span class="status-icon">✅</span><span>' + result.message + '</span>';
+                    
+                    // Reload settings display
+                    loadSettings();
+                } else {
+                    throw new Error(result.error || 'Failed to save');
+                }
+                
+            } catch (error) {
+                console.error('[Settings] Error saving:', error);
+                statusEl.innerHTML = `<span class="status-icon">❌</span><span>Error: ${error.message}</span>`;
+                showAlert(`Error: ${error.message}`, 'error');
+            }
+        }
+        
+        // Open folder picker (uses input with directory picker)
+        function openFolderPicker() {
+            // Create a temporary file input for folder selection
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.webkitdirectory = true;
+            input.directory = true;
+            
+            input.onchange = (e) => {
+                if (e.target.files.length > 0) {
+                    // Get the directory from the first file's path
+                    const firstFile = e.target.files[0];
+                    const fullPath = firstFile.webkitRelativePath;
+                    const folderPath = fullPath.split('/')[0];
+                    
+                    // Construct full path (approximate)
+                    const currentInput = document.getElementById('downloadsDirInput').value;
+                    const basePath = currentInput.substring(0, currentInput.lastIndexOf('\\') + 1 || currentInput.lastIndexOf('/') + 1);
+                    
+                    document.getElementById('downloadsDirInput').value = basePath + folderPath;
+                    showAlert(`Selected folder: ${folderPath}`, 'info');
+                }
+            };
+            
+            input.click();
+        }
+        
+        // Quick preset folders
+        function setFolderPreset(preset) {
+            let newPath;
+            
+            switch(preset) {
+                case 'downloads':
+                    // Try to detect user's Downloads folder
+                    if (navigator.userAgent.includes('Windows')) {
+                        newPath = `${process.env.USERPROFILE || ''}\\Downloads\\YouTube-Downloader`;
+                    } else {
+                        newPath = `~/Downloads/YouTube-Downloader`;
+                    }
+                    break;
+                case 'desktop':
+                    if (navigator.userAgent.includes('Windows')) {
+                        newPath = `${process.env.USERPROFILE || ''}\\Desktop\\YouTube-Downloads`;
+                    } else {
+                        newPath = `~/Desktop/YouTube-Downloads`;
+                    }
+                    break;
+                case 'videos':
+                    if (navigator.userAgent.includes('Windows')) {
+                        newPath = `${process.env.USERPROFILE || ''}\\Videos\\YouTube`;
+                    } else {
+                        newPath = `~/Videos/YouTube`;
+                    }
+                    break;
+                case 'documents':
+                    if (navigator.userAgent.includes('Windows')) {
+                        newPath = `${process.env.USERPROFILE || ''}\\Documents\\YouTube`;
+                    } else {
+                        newPath = `~/Documents/YouTube`;
+                    }
+                    break;
+                default:
+                    return;
+            }
+            
+            document.getElementById('downloadsDirInput').value = newPath;
+            showAlert(`Preset: ${preset}. Click "Save" to apply.`, 'info');
+        }
+
+        // Load settings on page load (after a short delay)
+        setTimeout(loadSettings, 1000);
 
         // Load channel from YouTube
         async function loadChannel() {

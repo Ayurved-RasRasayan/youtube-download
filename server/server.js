@@ -446,8 +446,34 @@ app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 // Server configuration
 const PORT = process.env.PORT || 3000;
 
-// Download configuration
-const DOWNLOADS_DIR = path.join(process.cwd(), 'downloads');
+// Download configuration - DEFAULT to user's Downloads folder!
+function getDefaultDownloadsDir() {
+    const os = require('os');
+    
+    if (process.platform === 'win32') {
+        // Windows: C:\Users\Username\Downloads
+        return path.join(os.homedir(), 'Downloads', 'YouTube-Downloader');
+    } else if (process.platform === 'darwin') {
+        // macOS: /Users/Username/Downloads/YouTube-Downloader
+        return path.join(os.homedir(), 'Downloads', 'YouTube-Downloader');
+    } else {
+        // Linux: /home/username/Downloads/YouTube-Downloader
+        return path.join(os.homedir(), 'Downloads', 'YouTube-Downloader');
+    }
+}
+
+// Current downloads directory (can be changed at runtime!)
+let DOWNLOADS_DIR = getDefaultDownloadsDir();
+
+// App settings (persisted and changeable)
+const appSettings = {
+    downloadsDir: DOWNLOADS_DIR,
+    quality: 'lowest',
+    format: 'mp4',
+    maxConcurrent: 1,  // Sequential downloads
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+};
 
 // ⚡ Check for ffmpeg availability (required for merging video+audio)
 let FFMPEG_AVAILABLE = false;
@@ -469,9 +495,13 @@ const AUTH_CONFIG = {
 };
 
 // Ensure downloads directory exists
-if (!fs.existsSync(DOWNLOADS_DIR)) {
-    fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+function ensureDownloadsDir() {
+    if (!fs.existsSync(DOWNLOADS_DIR)) {
+        fs.mkdirSync(DOWNLOADS_DIR, { recursive: true });
+        console.log('✅ Created downloads directory:', DOWNLOADS_DIR);
+    }
 }
+ensureDownloadsDir();
 
 // =============================================================================
 // VIDEO STATUS TRACKING - Track which videos are new vs downloaded
@@ -1834,20 +1864,173 @@ app.put('/api/settings', (req, res) => {
     console.log('[Settings] New settings:', JSON.stringify(req.body, null, 2));
     
     try {
-        // Merge new settings with existing
-        Object.assign(appSettings, req.body || {});
+        const { downloadsDir, quality, format } = req.body || {};
+        
+        // If downloadsDir is being changed, validate and update it
+        if (downloadsDir && downloadsDir !== DOWNLOADS_DIR) {
+            console.log('[Settings] 📁 Changing download folder...');
+            console.log('   From:', DOWNLOADS_DIR);
+            console.log('   To:  ', downloadsDir);
+            
+            // Validate path (prevent directory traversal attacks)
+            const normalizedPath = path.normalize(downloadsDir);
+            if (normalizedPath.includes('..')) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Invalid path: directory traversal not allowed'
+                });
+            }
+            
+            // Try to create/access the new directory
+            try {
+                if (!fs.existsSync(normalizedPath)) {
+                    fs.mkdirSync(normalizedPath, { recursive: true });
+                    console.log('[Settings] ✅ Created new downloads folder:', normalizedPath);
+                }
+                
+                // Update global variable
+                DOWNLOADS_DIR = normalizedPath;
+                appSettings.downloadsDir = normalizedPath;
+                appSettings.updatedAt = new Date().toISOString();
+                
+                console.log('[Settings] ✅ Download folder changed successfully!');
+                console.log('[Settings] New location:', DOWNLOADS_DIR);
+                
+            } catch (dirError) {
+                console.error('[Settings] ❌ Failed to create directory:', dirError.message);
+                return res.status(500).json({
+                    success: false,
+                    error: `Failed to create download directory: ${dirError.message}`
+                });
+            }
+        }
+        
+        // Update other settings
+        if (quality) appSettings.quality = quality;
+        if (format) appSettings.format = format;
+        appSettings.updatedAt = new Date().toISOString();
         
         console.log('[Settings] ✅ Settings updated successfully');
         res.json({
             success: true,
-            message: 'Settings updated',
-            data: appSettings
+            message: downloadsDir ? 'Download folder updated!' : 'Settings updated',
+            data: {
+                ...appSettings,
+                currentDownloadsDir: DOWNLOADS_DIR,
+                dirExists: fs.existsSync(DOWNLOADS_DIR),
+                fileCount: getDownloadedFilesCount()
+            }
         });
     } catch (error) {
         console.error('[Settings] ❌ Error updating settings:', error.message);
         res.status(500).json({
             success: false,
             error: 'Failed to update settings: ' + error.message
+        });
+    }
+});
+
+// Helper function to count downloaded files
+function getDownloadedFilesCount() {
+    try {
+        if (!fs.existsSync(DOWNLOADS_DIR)) return 0;
+        return fs.readdirSync(DOWNLOADS_DIR)
+            .filter(f => !f.startsWith('.') && f.match(/\.(mp4|webm|mkv|avi|mov|flv|mp3|m4a)$/i))
+            .length;
+    } catch (e) {
+        return 0;
+    }
+}
+
+// GET /api/settings - Get current application settings
+app.get('/api/settings', (req, res) => {
+    const files = [];
+    
+    try {
+        if (fs.existsSync(DOWNLOADS_DIR)) {
+            files = fs.readdirSync(DOWNLOADS_DIR)
+                .filter(f => !f.startsWith('.') && f.match(/\.(mp4|webm|mkv|avi|mov|flv|mp3|m4a)$/i))
+                .map(f => {
+                    const stats = fs.statSync(path.join(DOWNLOADS_DIR, f));
+                    return { name: f, sizeMB: (stats.size / 1024 / 1024).toFixed(2) };
+                })
+                .slice(0, 5); // Last 5 files for preview
+        }
+    } catch (e) {}
+    
+    res.json({
+        success: true,
+        data: {
+            ...appSettings,
+            currentDownloadsDir: DOWNLOADS_DIR,
+            resolvedPath: path.resolve(DOWNLOADS_DIR),
+            dirExists: fs.existsSync(DOWNLOADS_DIR),
+            fileCount: getDownloadedFilesCount(),
+            recentFiles: files,
+            platform: process.platform,
+            defaultDir: getDefaultDownloadsDir()
+        }
+    });
+});
+
+// POST /api/settings/test-folder - Test if a folder is writable
+app.post('/api/settings/test-folder', (req, res) => {
+    const { folderPath } = req.body;
+    
+    if (!folderPath) {
+        return res.status(400).json({ success: false, error: 'folderPath required' });
+    }
+    
+    console.log('\n[Settings] Testing folder:', folderPath);
+    
+    try {
+        const normalizedPath = path.normalize(folderPath);
+        
+        // Security check
+        if (normalizedPath.includes('..') && !normalizedPath.startsWith(os.homedir())) {
+            return res.status(400).json({ 
+                success: false, 
+                error: 'Invalid path' 
+            });
+        }
+        
+        // Check if exists or can be created
+        let exists = fs.existsSync(normalizedPath);
+        let writable = false;
+        
+        if (!exists) {
+            // Try to create
+            fs.mkdirSync(normalizedPath, { recursive: true });
+            exists = true;
+            console.log('[Settings] Created test folder:', normalizedPath);
+        }
+        
+        // Test write permission by creating a temp file
+        const testFile = path.join(normalizedPath, '.write-test-' + Date.now());
+        fs.writeFileSync(testFile, 'test');
+        fs.unlinkSync(testFile);
+        writable = true;
+        
+        console.log('[Settings] ✅ Folder is writable:', normalizedPath);
+        
+        res.json({
+            success: true,
+            message: 'Folder is valid and writable',
+            data: {
+                path: normalizedPath,
+                exists: exists,
+                writable: writable,
+                canUse: true
+            }
+        });
+        
+    } catch (error) {
+        console.error('[Settings] ❌ Folder test failed:', error.message);
+        res.json({
+            success: false,
+            message: 'Cannot use this folder',
+            error: error.message,
+            data: { canUse: false }
         });
     }
 });
@@ -2896,6 +3079,31 @@ app.get('/api/download/list', (req, res) => {
 
 // GET /api/system/status - System status endpoint
 app.get('/api/system/status', (req, res) => {
+    // Get actual files in downloads directory
+    let downloadedFiles = [];
+    let downloadsDirExists = false;
+    try {
+        if (fs.existsSync(DOWNLOADS_DIR)) {
+            downloadsDirExists = true;
+            downloadedFiles = fs.readdirSync(DOWNLOADS_DIR)
+                .filter(f => !f.startsWith('.') && f.match(/\.(mp4|webm|mkv|avi|mov|flv|mp3|m4a)$/i))
+                .map(filename => {
+                    const filePath = path.join(DOWNLOADS_DIR, filename);
+                    const stats = fs.statSync(filePath);
+                    return {
+                        filename: filename,
+                        size: stats.size,
+                        sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+                        modified: stats.mtime.toISOString(),
+                        downloadUrl: `/api/download-file/by-name/${encodeURIComponent(filename)}?download=true`
+                    };
+                })
+                .sort((a, b) => new Date(b.modified) - new Date(a.modified));
+        }
+    } catch (e) {
+        console.error('[System Status] Error reading downloads dir:', e.message);
+    }
+    
     res.json({
         success: true,
         data: {
@@ -2907,8 +3115,12 @@ app.get('/api/system/status', (req, res) => {
             },
             yt_dlp: {
                 installed: true,
-                version: '2026.08.19', // We know this from earlier test
+                version: '2026.08.19',
                 status: 'ok'
+            },
+            ffmpeg: {
+                available: FFMPEG_AVAILABLE,
+                status: FFMPEG_AVAILABLE ? 'installed' : 'not_found'
             },
             cookies: {
                 mode: isCookiesFileValid() ? 'file' : 'browser',
@@ -2921,7 +3133,14 @@ app.get('/api/system/status', (req, res) => {
             },
             downloads: {
                 active: downloadManager.getAll().filter(d => d.status === 'downloading').length,
-                total: downloadManager.getAll().length
+                total: downloadManager.getAll().length,
+                directory: {
+                    path: path.resolve(DOWNLOADS_DIR),
+                    exists: downloadsDirExists,
+                    fileCount: downloadedFiles.length,
+                    totalSizeMB: downloadedFiles.reduce((sum, f) => sum + parseFloat(f.sizeMB), 0).toFixed(2),
+                    files: downloadedFiles.slice(0, 10) // Last 10 files
+                }
             }
         }
     });
@@ -3014,25 +3233,27 @@ console.log('='.repeat(70) + '\n');
 // Start server
 app.listen(PORT, () => {
     console.log('╔══════════════════════════════════════════════════════════════╗');
-    console.log('║                                                              ║');
     console.log('║                   🚀 SERVER STARTED! 🚀                      ║');
     console.log('║                                                              ║');
     console.log(`║  🌐 Server:     http://localhost:${PORT}                            ║`);
-    console.log(`║  📁 Downloads:  ${DOWNLOADS_DIR}                                    ║`);
+    console.log(`║  📁 Downloads:  ${DOWNLOADS_DIR}        ║`);
     console.log(`║  🎬 FFmpeg:     ${FFMPEG_AVAILABLE ? '✅ Installed (merging enabled)' : '⚠️ Not found (using fallback)'}        ║`);
     console.log(`║  🍪 Cookies:    ${isCookiesFileValid() ? '✅ Valid' : '⚠️ Using browser'}                              ║`);
     console.log('║                                                              ║');
     console.log('╠══════════════════════════════════════════════════════════════╣');
     console.log('║  Available API Endpoints:                                   ║');
     console.log('╠══════════════════════════════════════════════════════════════╣');
-    console.log('║  POST   /api/channels          Load channel videos           ║');
-    console.log('║  POST   /api/download           Download single video        ║');
-    console.log('║  POST   /api/download/batch     Batch download (sequential)  ║');
-    console.log('║  GET    /api/download-queue     Queue status (polling)       ║');
-    console.log('║  GET    /api/download-file/:id  Download file by ID         ║');
-    console.log('║  GET    /api/files              List all downloaded files    ║');
-    console.log('║  GET    /api/download-file/by-name/:fn  Download by filename ║');
+    console.log('║  GET    /api/settings          View/change download folder     ║');
+    console.log('║  PUT    /api/settings          Update settings                 ║');
+    console.log('║  POST   /api/channels          Load channel videos             ║');
+    console.log('║  POST   /api/download           Download single video           ║');
+    console.log('║  POST   /api/download/batch     Batch download (sequential)     ║');
+    console.log('║  GET    /api/files              List all downloaded files        ║');
+    console.log('║  GET    /api/download-file/:id  Download file by ID            ║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
+    console.log('');
+    console.log(`💡 Default download folder is your Downloads/YouTube-Downloader`);
+    console.log(`   Change it in frontend Settings panel or via /api/settings`);
     console.log('');
     console.log('Press Ctrl+C to stop the server');
 });
