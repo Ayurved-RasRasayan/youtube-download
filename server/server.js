@@ -91,77 +91,138 @@ function getNativeCookiePath() {
 }
 
 /**
- * Check if cookies.txt exists and appears valid
+ * Check if cookies.txt exists and appears valid - WITH DETAILED LOGGING
  * @returns {boolean} true if cookies.txt can be used
  */
 function isCookiesFileValid() {
+    console.log('\n[isCookiesFileValid] Starting validation...');
     const cookiePath = AUTH_CONFIG.cookieFilePath;
+    console.log('[isCookiesFileValid] Checking path:', cookiePath);
+    
+    // Check if path is defined
+    if (!cookiePath) {
+        console.log('[isCookiesFileValid] ❌ FAIL: Cookie path is undefined/null!');
+        return false;
+    }
     
     // Check if file exists
-    if (!cookiePath || !fs.existsSync(cookiePath)) {
-        console.log('[Cookie Check] File does not exist:', cookiePath);
+    console.log('[isCookiesFileValid] Checking if file exists...');
+    const exists = fs.existsSync(cookiePath);
+    console.log('[isCookiesFileValid] File exists?', exists);
+    
+    if (!exists) {
+        console.log('[isCookiesFileValid] ❌ FAIL: File does not exist:', cookiePath);
+        console.log('[isCookiesFileValid] 💡 TIP: Delete bad cookies.txt or export fresh ones');
         return false;
     }
     
     // Check if file has content
     try {
+        console.log('[isCookiesFileValid] Reading file stats...');
         const stats = fs.statSync(cookiePath);
+        console.log('[isCookiesFileValid] File size:', stats.size, 'bytes');
+        
         if (stats.size === 0) {
-            console.log('[Cookie Check] File is empty:', cookiePath);
+            console.log('[isCookiesFileValid] ❌ FAIL: File is empty!');
             return false;
         }
         
         // Read first few lines to check format
+        console.log('[isCookiesFileValid] Reading file content...');
         const content = fs.readFileSync(cookiePath, 'utf8');
-        const lines = content.split('\n').filter(line => line.trim() && !line.startsWith('#'));
+        console.log('[isCookiesFileValid] Content length:', content.length, 'chars');
+        
+        const allLines = content.split('\n');
+        console.log('[isCookiesFileValid] Total lines (including empty/comments):', allLines.length);
+        
+        const lines = allLines.filter(line => line.trim() && !line.startsWith('#'));
+        console.log('[isCookiesFileValid] Data lines (non-empty, non-comment):', lines.length);
         
         if (lines.length === 0) {
-            console.log('[Cookie Check] No cookie entries found');
+            console.log('[isCookiesFileValid] ❌ FAIL: No cookie entries found (only comments/empty lines)');
+            console.log('[isCookiesFileValid] First few lines of file:');
+            allLines.slice(0, 5).forEach((line, i) => console.log(`   Line ${i}:`, line.substring(0, 100)));
             return false;
         }
+        
+        // Show first few data lines for debugging
+        console.log('[isCookiesFileValid] First 3 data lines:');
+        lines.slice(0, 3).forEach((line, i) => {
+            const fields = line.split('\t');
+            console.log(`   Data line ${i}: ${fields.length} fields`);
+            console.log('      Raw:', line.substring(0, 120));
+        });
         
         // Validate at least one line has correct Netscape format (7 tab-separated fields)
         const sampleLine = lines[0];
         const fields = sampleLine.split('\t');
         
+        console.log('[isCookiesFileValid] Validating Netscape format...');
+        console.log('[isCookiesFileValid] Expected: 7 tab-separated fields');
+        console.log('[isCookiesFileValid] Actual:', fields.length, 'fields');
+        
         if (fields.length < 7) {
-            console.log('[Cookie Check] INVALID FORMAT - line has only', fields.length, 'fields (need 7):');
-            console.log('   Sample:', sampleLine.substring(0, 100) + (sampleLine.length > 100 ? '...' : ''));
+            console.log('\n[isCookiesFileValid] ❌ INVALID FORMAT DETECTED!');
+            console.log('[isCookiesFileValid] This is why channel loading fails with cookies.txt!');
+            console.log('[isCookiesFileValid] Problem: Lines have only', fields.length, 'fields instead of 7');
+            console.log('[isCookiesFileValid] Root cause: Python extractor produced corrupted cookies');
+            console.log('[isCookiesFileValid] Solution: Server will fall back to browser cookies automatically');
+            console.log('\n[isCookiesFileValid] Field breakdown of first line:');
+            fields.forEach((field, i) => {
+                console.log(`   Field ${i}: [${field.substring(0, 50)}]`);
+            });
             return false;
         }
         
-        console.log('[Cookie Check] ✅ VALID - Found', lines.length, 'cookies in valid Netscape format');
+        console.log('\n[isCookiesFileValid] ✅ PASS: Valid Netscape format!');
+        console.log('[isCookiesFileValid] Found', lines.length, 'cookies in correct format');
+        console.log('[isCookiesFileValid] Cookies file can be used safely');
         return true;
         
     } catch (err) {
-        console.log('[Cookie Check] Error reading file:', err.message);
+        console.log('[isCookiesFileValid] ❌ EXCEPTION during validation:');
+        console.log('   Error name:', err.name);
+        console.log('   Error message:', err.message);
+        console.log('   Error code:', err.code);
         return false;
     }
 }
 
 /**
- * Build yt-dlp command with smart cookie handling
+ * Build yt-dlp command with smart cookie handling - WITH DEBUG LOGGING
  * Tries cookies.txt first, falls back to browser extraction
  * @param {string} baseUrl - The base yt-dlp command (without cookie args)
  * @param {string} url - The URL to process
  * @returns {string} Complete command string
  */
 function buildCommandWithCookies(baseUrl, url) {
+    console.log('\n[buildCommandWithCookies] Building command...');
+    console.log('[buildCommandWithCookies] Input URL:', url);
+    
     // Ensure we have native path
     getNativeCookiePath();
     
-    // Try to use cookies.txt if valid
-    if (isCookiesFileValid()) {
+    console.log('[buildCommandWithCookies] Cookie path after conversion:', AUTH_CONFIG.cookieFilePath);
+    
+    // Validate cookies file
+    const cookiesValid = isCookiesFileValid();
+    console.log('[buildCommandWithCookies] Cookies file valid?', cookiesValid);
+    
+    if (cookiesValid) {
         const cmd = baseUrl + ' --cookies "' + AUTH_CONFIG.cookieFilePath + '" "' + url + '"';
-        console.log('[Command] Using cookies.txt file:', AUTH_CONFIG.cookieFilePath);
+        console.log('[buildCommandWithCookies] ✅ Using cookies.txt file mode');
+        console.log('[buildCommandWithCookies] Cookie path:', AUTH_CONFIG.cookieFilePath);
+        console.log('[buildCommandWithCookies] Full command length:', cmd.length, 'chars');
         return cmd;
     }
     
     // Fall back to browser-based cookie extraction
     const browser = AUTH_CONFIG.browserName || 'edge';
     const cmd = baseUrl + ' --cookies-from-browser ' + browser + ' "' + url + '"';
-    console.log('[Command] Falling back to browser cookies:', browser);
-    console.log('[Command] Reason: cookies.txt not available or invalid');
+    console.log('[buildCommandWithCookies] 🔄 Using browser fallback mode');
+    console.log('[buildCommandWithCookies] Browser:', browser);
+    console.log('[buildCommandWithCookies] Reason: cookies.txt not available or invalid');
+    console.log('[buildCommandWithCookies] Full command length:', cmd.length, 'chars');
     
     return cmd;
 }
@@ -381,61 +442,146 @@ function getBestFormat(formats) {
 // CHANNEL FETCHING - WITH SMART COOKIE HANDLING
 // =============================================================================
 
-// Fetch channel info using yt-dlp
+// Fetch channel info using yt-dlp - WITH FULL DEBUG LOGGING
 function fetchChannelInfo(channelId, channelUrl) {
     return new Promise((resolve, reject) => {
+        console.log('\n[fetchChannelInfo] Starting...');
+        console.log('[fetchChannelInfo] Parameters:');
+        console.log('   - channelId:', channelId);
+        console.log('   - channelUrl:', channelUrl);
+        
         // Base command without cookie arguments
         const baseCmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s"';
+        
+        console.log('[fetchChannelInfo] Base command built');
         
         // Use smart cookie handling - tries cookies.txt, falls back to browser
         const cmd = buildCommandWithCookies(baseCmd, channelUrl);
         
-        console.log('[Channel] Command:', cmd);
+        console.log('[fetchChannelInfo] Final command:');
+        console.log('   ', cmd);
+        console.log('[fetchChannelInfo] Command length:', cmd.length, 'characters');
+        
+        const startTime = Date.now();
+        console.log('[fetchChannelInfo] Executing command at:', new Date().toISOString());
 
         exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+            console.log('\n[fetchChannelInfo] Command completed in', elapsed, 'seconds');
+            console.log('[fetchChannelInfo] Results:');
+            console.log('   - error:', error ? error.message : 'null');
+            console.log('   - stdout length:', stdout ? stdout.length : 0, 'chars');
+            console.log('   - stderr length:', stderr ? stderr.length : 0, 'chars');
+            
+            if (stderr && stderr.trim()) {
+                console.log('\n[fetchChannelInfo] STDERR output (first 2000 chars):');
+                console.log(stderr.substring(0, 2000));
+                if (stderr.length > 2000) {
+                    console.log('... [truncated, total', stderr.length, 'chars]');
+                }
+            }
+            
+            if (stdout && stdout.trim()) {
+                console.log('\n[fetchChannelInfo] STDOUT output (first 1500 chars):');
+                console.log(stdout.substring(0, 1500));
+                if (stdout.length > 1500) {
+                    console.log('... [truncated, total', stdout.length, 'chars]');
+                }
+            }
+            
             if (error) {
+                console.log('\n[fetchChannelInfo] ❌ ERROR DETECTED:');
+                console.log('   - Error code:', error.code);
+                console.log('   - Error signal:', error.signal);
+                console.log('   - Error message:', error.message);
+                console.log('   - Killed:', error.killed);
+                
                 // If cookies.txt failed but we haven't tried browser yet, retry with browser
                 if (error.message.includes('invalid Netscape format') || 
                     error.message.includes('CookieLoadError') ||
-                    error.message.includes('failed to load cookies')) {
+                    error.message.includes('failed to load cookies') ||
+                    error.message.includes('invalid Netscape format')) {
                     
-                    console.log('[Channel] Retrying with browser cookies due to invalid cookies.txt...');
+                    console.log('\n[fetchChannelInfo] 🔄 RETRYING WITH BROWSER COOKIES...');
+                    console.log('[fetchChannelInfo] Reason: Invalid cookies.txt detected');
                     
                     const browserCmd = baseCmd + ' --cookies-from-browser ' + AUTH_CONFIG.browserName + ' "' + channelUrl + '"';
                     
+                    console.log('[fetchChannelInfo] Browser fallback command:');
+                    console.log('   ', browserCmd);
+                    
                     exec(browserCmd, { maxBuffer: 50 * 1024 * 1024 }, (retryError, retryStdout, retryStderr) => {
+                        const retryElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                        console.log('\n[fetchChannelInfo] Browser fallback completed in', retryElapsed, 'seconds total');
+                        
                         if (retryError) {
+                            console.log('[fetchChannelInfo] ❌ BROWSER FALLBACK ALSO FAILED:');
+                            console.log('   - Error:', retryError.message);
+                            
+                            if (retryStderr) {
+                                console.log('   - STDERR:', retryStderr.substring(0, 1000));
+                            }
+                            
                             reject(new Error('Failed to fetch channel (browser fallback also failed): ' + retryError.message));
                             return;
                         }
                         
+                        console.log('[fetchChannelInfo] ✅ BROWSER FALLBACK SUCCEEDED!');
+                        
+                        if (retryStdout) {
+                            console.log('[fetchChannelInfo] Browser stdout (first 1000 chars):');
+                            console.log(retryStdout.substring(0, 1000));
+                        }
+                        
                         const videos = parseChannelOutput(retryStdout);
+                        console.log('[fetchChannelInfo] Parsed result:', videos.videos.length, 'videos,', videos.liveVideos.length, 'live');
                         resolve(videos);
                     });
                     
                     return;
                 }
                 
+                console.log('[fetchChannelInfo] Rejecting with error (no retry):');
                 reject(new Error('Failed to fetch channel: ' + error.message));
                 return;
             }
 
+            console.log('\n[fetchChannelInfo] ✅ SUCCESS - Parsing output...');
             const videos = parseChannelOutput(stdout);
+            console.log('[fetchChannelInfo] Parsed result:', videos.videos.length, 'videos,', videos.liveVideos.length, 'live');
             resolve(videos);
         });
     });
 }
 
 /**
- * Parse yt-dlp channel output into video objects
+ * Parse yt-dlp channel output into video objects - WITH DEBUG LOGGING
  */
 function parseChannelOutput(stdout) {
+    console.log('\n[parseChannelOutput] Starting parse...');
+    console.log('[parseChannelOutput] Input length:', stdout ? stdout.length : 0, 'chars');
+    
+    if (!stdout || typeof stdout !== 'string') {
+        console.log('[parseChannelOutput] ⚠️  WARNING: Invalid input - not a string!');
+        return { videos: [], liveVideos: [] };
+    }
+    
     const lines = stdout.trim().split('\n').filter(function(line) { return line.trim(); });
+    console.log('[parseChannelOutput] Total non-empty lines:', lines.length);
+    
     const videos = [];
     const liveVideos = [];
+    let parseErrors = 0;
 
-    lines.forEach(function(line) {
+    lines.forEach(function(line, index) {
         const parts = line.split('\t');
+        
+        // Debug first 3 lines in detail
+        if (index < 3) {
+            console.log(`[parseChannelOutput] Line ${index}: ${parts.length} fields`);
+            console.log('   Raw:', line.substring(0, 150));
+        }
+        
         if (parts.length >= 6) {
             const id = parts[0];
             const title = parts[1] || 'Untitled';
@@ -462,9 +608,23 @@ function parseChannelOutput(stdout) {
             } else {
                 videos.push(video);
             }
+        } else {
+            parseErrors++;
+            if (parseErrors <= 3) {
+                console.log(`[parseChannelOutput] ⚠️  Skipped line ${index}: only ${parts.length} fields (need 6+)`);
+            }
         }
     });
-
+    
+    if (parseErrors > 0) {
+        console.log('[parseChannelOutput] Total skipped lines (wrong format):', parseErrors);
+    }
+    
+    console.log('[parseChannelOutput] Parse complete:');
+    console.log('   - Regular videos:', videos.length);
+    console.log('   - Live videos:', liveVideos.length);
+    console.log('   - Total:', videos.length + liveVideos.length);
+    
     return { videos, liveVideos };
 }
 
@@ -644,32 +804,95 @@ function executeDownload(downloadId, url, outputPath, format, onProgress, onComp
 // API ROUTES
 // =============================================================================
 
-// Channel info endpoint
+// Channel info endpoint - WITH FULL DEBUG LOGGING
 app.post('/api/channel/info', async (req, res) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('🔍 [DEBUG] Channel Info API Called');
+    console.log('='.repeat(80));
+    console.log('[DEBUG] Request body:', JSON.stringify(req.body, null, 2));
+    console.log('[DEBUG] Request headers:', JSON.stringify({
+        'content-type': req.headers['content-type'],
+        'user-agent': req.headers['user-agent']
+    }, null, 2));
+    
     try {
         const { channelId, channelUrl } = req.body;
         
+        console.log('[DEBUG] Extracted params:');
+        console.log('   - channelId:', channelId);
+        console.log('   - channelUrl:', channelUrl);
+        
         if (!channelId && !channelUrl) {
+            console.log('[DEBUG] ❌ ERROR: No channelId or channelUrl provided!');
             return res.status(400).json({ error: 'Channel ID or URL required' });
         }
 
+        const url = channelUrl || `https://www.youtube.com/@${channelId}`;
+        console.log('[DEBUG] Resolved URL:', url);
         console.log('\n[Channel] Loading channel:', channelId || channelUrl);
         
-        const url = channelUrl || `https://www.youtube.com/@${channelId}`;
+        // Log cookie status before fetching
+        console.log('\n[DEBUG] Cookie Status Check:');
+        console.log('   - Cookie Path:', AUTH_CONFIG.cookieFilePath);
+        console.log('   - File Exists:', fs.existsSync(AUTH_CONFIG.cookieFilePath));
+        
+        if (fs.existsSync(AUTH_CONFIG.cookieFilePath)) {
+            try {
+                const stats = fs.statSync(AUTH_CONFIG.cookieFilePath);
+                console.log('   - File Size:', stats.size, 'bytes');
+                const content = fs.readFileSync(AUTH_CONFIG.cookieFilePath, 'utf8');
+                const lines = content.split('\n').filter(l => l.trim() && !l.startsWith('#'));
+                console.log('   - Cookie Entries:', lines.length);
+                if (lines.length > 0) {
+                    console.log('   - Sample Line:', lines[0].substring(0, 100));
+                    const fields = lines[0].split('\t');
+                    console.log('   - Fields Count:', fields.length, '(need 7 for valid Netscape)');
+                }
+            } catch (e) {
+                console.log('   - Error reading file:', e.message);
+            }
+        }
+        
+        console.log('\n[DEBUG] Calling fetchChannelInfo...');
         const channelData = await fetchChannelInfo(channelId || channelUrl, url);
         
-        res.json({
+        console.log('\n[DEBUG] ✅ fetchChannelInfo SUCCESS!');
+        console.log('[DEBUG] Videos found:', channelData.videos.length);
+        console.log('[DEBUG] Live videos found:', channelData.liveVideos.length);
+        
+        if (channelData.videos.length > 0) {
+            console.log('[DEBUG] First video:', JSON.stringify(channelData.videos[0], null, 2));
+        }
+        
+        const response = {
             success: true,
             data: channelData.videos,
             liveVideos: channelData.liveVideos,
             count: channelData.videos.length + channelData.liveVideos.length
-        });
+        };
+        
+        console.log('[DEBUG] Sending response with count:', response.count);
+        console.log('='.repeat(80) + '\n');
+        
+        res.json(response);
         
     } catch (error) {
-        console.error('[Channel] Error:', error.message);
+        console.log('\n' + '='.repeat(80));
+        console.log('❌ [DEBUG] Channel Fetch FAILED!');
+        console.log('='.repeat(80));
+        console.log('[DEBUG] Error Type:', error.constructor.name);
+        console.log('[DEBUG] Error Message:', error.message);
+        console.log('[DEBUG] Error Stack:', error.stack);
+        console.log('='.repeat(80) + '\n');
+        
         res.status(500).json({ 
             error: 'Failed to load channel: ' + error.message,
-            suggestion: 'Try refreshing the page or check your internet connection'
+            suggestion: 'Try refreshing the page or check your internet connection',
+            debug: {
+                errorType: error.constructor.name,
+                errorMessage: error.message,
+                timestamp: new Date().toISOString()
+            }
         });
     }
 });
