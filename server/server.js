@@ -1846,13 +1846,19 @@ function analyzeVideoFormats(videoUrl) {
         console.log('[Format Analyzer] Using text-based parsing (reliable method)');
         
         // Command to list all available formats in TEXT format (more reliable than JSON)
-        const cmd = 'yt-dlp --list-formats "' + videoUrl + '" 2>/dev/null';
+        // ⚠️ WINDOWS COMPATIBILITY: Don't use shell redirects like 2>/dev/null (Unix-only!)
+        // Instead, use Node.js exec options to handle stderr properly
+        const cmd = 'yt-dlp --list-formats "' + videoUrl + '"';
         
         console.log('[Format Analyzer] Command:', cmd);
         
         const startTime = Date.now();
         
-        exec(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+        exec(cmd, { 
+            maxBuffer: 50 * 1024 * 1024, 
+            timeout: 30000,
+            windowsHide: true  // Hide console window on Windows
+        }, (error, stdout, stderr) => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
             
             if (error) {
