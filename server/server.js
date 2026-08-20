@@ -461,6 +461,128 @@ if (!fs.existsSync(DOWNLOADS_DIR)) {
 }
 
 // =============================================================================
+// VIDEO STATUS TRACKING - Track which videos are new vs downloaded
+// =============================================================================
+
+// In-memory set of downloaded video IDs (persisted across requests)
+const downloadedVideos = new Set();  // Stores: videoId -> filename
+const skippedVideos = new Set();    // Stores: videoId -> reason
+
+/**
+ * Check if a file already exists in the downloads directory
+ * @param {string} filename - The filename to check
+ * @returns {object} - { exists: boolean, path: string, size: number }
+ */
+function checkFileExists(filename) {
+    // Try different possible extensions
+    const extensions = ['.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'];
+    const baseName = filename.replace(/\.[^.]+$/, ''); // Remove extension if present
+    
+    for (const ext of extensions) {
+        const fullPath = path.join(DOWNLOADS_DIR, baseName + ext);
+        if (fs.existsSync(fullPath)) {
+            const stats = fs.statSync(fullPath);
+            return {
+                exists: true,
+                path: fullPath,
+                filename: baseName + ext,
+                size: stats.size,
+                sizeMB: Math.round(stats.size / 1024 / 1024 * 100) / 100,
+                modified: stats.mtime
+            };
+        }
+    }
+    
+    // Also check exact filename match
+    const exactPath = path.join(DOWNLOADS_DIR, filename);
+    if (fs.existsSync(exactPath)) {
+        const stats = fs.statSync(exactPath);
+        return {
+            exists: true,
+            path: exactPath,
+            filename: filename,
+            size: stats.size,
+            sizeMB: Math.round(stats.size / 1024 / 1024 * 100) / 100,
+            modified: stats.mtime
+        };
+    }
+    
+    return { exists: false, path: null, filename: null, size: 0, sizeMB: 0 };
+}
+
+/**
+ * Scan downloads directory and populate downloadedVideos set
+ * Call this on server startup to track already-downloaded files
+ */
+function scanExistingDownloads() {
+    console.log('\n[Status Tracker] Scanning existing downloads in:', DOWNLOADS_DIR);
+    
+    try {
+        const files = fs.readdirSync(DOWNLOADS_DIR);
+        let count = 0;
+        
+        files.forEach(file => {
+            if (file.endsWith('.mp4') || file.endsWith('.webm') || file.endsWith('.mkv')) {
+                // Extract video ID from filename if possible (format: title_videoId.mp4 or just title.mp4)
+                // For now, we'll use filename as the key
+                downloadedVideos.add(file);
+                count++;
+            }
+        });
+        
+        console.log('[Status Tracker] ✅ Found', count, 'existing downloaded files');
+        console.log('[Status Tracker] Videos marked as "downloaded":', count);
+        
+    } catch (error) {
+        console.log('[Status Tracker] ⚠️ Error scanning downloads:', error.message);
+    }
+}
+
+/**
+ * Get status of a specific video
+ * @param {string} videoId - YouTube video ID
+ * @param {string} title - Video title (used as fallback)
+ * @returns {string} - 'new' | 'downloaded' | 'downloading' | 'skipped' | 'error'
+ */
+function getVideoStatus(videoId, title) {
+    if (skippedVideos.has(videoId)) {
+        return 'skipped';
+    }
+    
+    // Check by video ID first
+    if (downloadedVideos.has(videoId)) {
+        return 'downloaded';
+    }
+    
+    // Check by filename (title-based)
+    if (title) {
+        const safeTitle = title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 200);
+        const possibleFiles = [
+            safeTitle + '.mp4',
+            safeTitle.substring(0, 100) + '.mp4'
+        ];
+        
+        for (const file of possibleFiles) {
+            if (downloadedVideos.has(file)) {
+                return 'downloaded';
+            }
+            
+            // Also check actual filesystem
+            const fileInfo = checkFileExists(file);
+            if (fileInfo.exists) {
+                downloadedVideos.add(file); // Cache it
+                return 'downloaded';
+            }
+        }
+    }
+    
+    return 'new';
+}
+
+// Scan existing downloads on startup
+scanExistingDownloads();
+
+// =============================================================================
 // STATIC FILE SERVING - Robust frontend loading
 // =============================================================================
 
@@ -1175,6 +1297,41 @@ app.post('/api/download', async (req, res) => {
         console.log('   - Output file:', outputFilename);
         console.log('   - Full path:', outputPath);
 
+        // ⭐ NEW: Check if file already exists (skip download if so)
+        const existingFile = checkFileExists(outputFilename);
+        const videoTitle = req.body.title || filename || `video_${videoId}`;
+        
+        if (existingFile.exists) {
+            console.log('\n[Download] ⚠️ FILE ALREADY EXISTS - SKIPPING DOWNLOAD');
+            console.log('[Download] Existing file:', existingFile.filename);
+            console.log('[Download] File size:', existingFile.sizeMB, 'MB');
+            console.log('[Download] Last modified:', existingFile.modified);
+            
+            // Mark as downloaded in tracking
+            downloadedVideos.add(videoId);
+            downloadedVideos.add(existingFile.filename);
+            
+            // Return immediate success with "skipped" status
+            return res.status(200).json({
+                success: true,
+                jobId: downloadId,
+                status: 'skipped',
+                message: 'File already exists, skipped download',
+                download: {
+                    id: downloadId,
+                    url: videoUrl,
+                    filename: existingFile.filename,
+                    status: 'skipped',
+                    progress: 100,
+                    size: existingFile.sizeMB,
+                    sizeMB: existingFile.sizeMB,
+                    path: existingFile.path,
+                    reason: 'already_exists',
+                    skippedAt: new Date().toISOString()
+                }
+            });
+        }
+
         const download = downloadManager.add({
             id: downloadId,
             url: videoUrl,
@@ -1225,6 +1382,15 @@ app.post('/api/download', async (req, res) => {
                         download.status = 'completed';
                         download.progress = 100;
                         download.endTime = Date.now();
+                        
+                        // ⭐ Mark as downloaded in tracking system
+                        if (videoId) {
+                            downloadedVideos.add(videoId);
+                        }
+                        if (download.filename) {
+                            downloadedVideos.add(download.filename);
+                        }
+                        
                         const shortName = (download.filename || 'video').substring(0, 35);
                         console.log(`   ✅  ${shortName} | Download complete!`);
                     },
@@ -1545,6 +1711,28 @@ app.post('/api/channels', async (req, res) => {
         console.log('[Channels] Videos found:', channelData.videos.length);
         console.log('[Channels] Live videos found:', channelData.liveVideos.length);
         
+        // ⭐ NEW: Add download status to each video
+        const videosWithStatus = channelData.videos.map(video => {
+            const status = getVideoStatus(video.id || video.videoId, video.title);
+            const fileInfo = status === 'downloaded' ? checkFileExists(video.title) : null;
+            
+            return {
+                ...video,
+                downloadStatus: status,  // 'new' | 'downloaded' | 'skipped'
+                downloadedAt: fileInfo?.modified || null,
+                fileSize: fileInfo?.sizeMB || null,
+                filePath: fileInfo?.path || null
+            };
+        });
+        
+        // Count statuses for summary
+        const newCount = videosWithStatus.filter(v => v.downloadStatus === 'new').length;
+        const downloadedCount = videosWithStatus.filter(v => v.downloadStatus === 'downloaded').length;
+        
+        console.log('[Channels] 📊 Video status breakdown:');
+        console.log('   ✨ New (not downloaded):', newCount);
+        console.log('   ✅ Already downloaded:', downloadedCount);
+        
         // Create channel object
         const channel = {
             id: uuidv4(),
@@ -1552,11 +1740,16 @@ app.post('/api/channels', async (req, res) => {
             url: channelUrl,
             name: name || channelIdFinal,
             videoCount: channelData.videos.length + channelData.liveVideos.length,
-            videos: channelData.videos,
+            videos: videosWithStatus,  // ← Use videos WITH STATUS
             liveVideos: channelData.liveVideos,
             addedAt: new Date().toISOString(),
             lastChecked: new Date().toISOString(),
-            status: 'active'
+            status: 'active',
+            stats: {
+                total: videosWithStatus.length,
+                new: newCount,
+                downloaded: downloadedCount
+            }
         };
         
         // Save to in-memory storage
@@ -1632,7 +1825,7 @@ app.delete('/api/channels/:id', (req, res) => {
  */
 function analyzeVideoFormats(videoUrl) {
     return new Promise((resolve, reject) => {
-        console.log('\n[Format Analyzer] Starting analysis for:', videoUrl);
+        console.log('\n[Format Analyzer] Starting MP4 format analysis for:', videoUrl);
         
         // Build command to dump JSON format info (no cookies needed for format listing)
         const cmd = 'yt-dlp --dump-json --no-check-certificate --list-formats "' + videoUrl + '"';
@@ -1670,20 +1863,41 @@ function analyzeVideoFormats(videoUrl) {
                         
                         // Format entries have format_id
                         if (data.format_id) {
+                            // ⭐ FILTER: Only include formats compatible with MP4 output
+                            // MP4 supports: mp4, m4a, webm (can be remuxed), and combined formats
+                            const ext = (data.ext || '').toLowerCase();
+                            const vcodec = data.vcodec || 'none';
+                            const acodec = data.acodec || 'none';
+                            
+                            // Check if this format can be used for MP4 output
+                            const isMp4Compatible = 
+                                ext === 'mp4' ||           // Native MP4
+                                ext === 'm4a' ||           // Audio-only MP4 container
+                                ext === 'webm' ||          // Can be remuxed to MP4
+                                data.format_id.includes('+') ||  // Combined format
+                                (vcodec !== 'none' && (vcodec.includes('avc') || vcodec.includes('h264') || vcodec.includes('vp9') || vcodec.includes('av01'))) ||
+                                (acodec !== 'none' && (acodec.includes('aac') || acodec.includes('mp3') || acodec.includes('opus') || acodec.includes('vorbis')));
+                            
+                            if (!isMp4Compatible) {
+                                console.log(`[Format Analyzer] Skipping non-MP4 format ${data.format_id} (${ext})`);
+                                continue;
+                            }
+                            
                             formats.push({
                                 format_id: data.format_id,
-                                ext: data.ext,
+                                ext: ext,
                                 resolution: data.resolution || `${data.width || '?'}x${data.height || '?'}`,
                                 filesize: data.filesize || null,
                                 filesize_approx: data.filesize_approx || null,
                                 fps: data.fps || null,
-                                vcodec: data.vcodec || 'none',
-                                acodec: data.acodec || 'none',
-                                hasVideo: data.vcodec !== 'none',
-                                hasAudio: data.acodec !== 'none',
+                                vcodec: vcodec,
+                                acodec: acodec,
+                                hasVideo: vcodec !== 'none',
+                                hasAudio: acodec !== 'none',
                                 quality: data.height || 0,
                                 width: data.width || 0,
-                                height: data.height || 0
+                                height: data.height || 0,
+                                mp4Compatible: true
                             });
                         }
                     } catch (e) {
@@ -1691,24 +1905,56 @@ function analyzeVideoFormats(videoUrl) {
                     }
                 }
                 
-                // Sort by quality (lowest first)
+                // Separate into categories for better selection
                 const videoFormats = formats.filter(f => f.hasVideo).sort((a, b) => a.quality - b.quality);
                 
-                // Find lowest quality combined format (video+audio)
-                const lowestQuality = videoFormats.find(f => f.hasVideo && f.hasAudio) 
-                    || videoFormats.find(f => f.hasVideo)
-                    || formats[0];
+                // Priority order for MP4 output:
+                // 1. Combined format (video+audio already merged) - lowest quality
+                // 2. Video-only format (will merge audio separately) - lowest quality
+                const combinedFormats = videoFormats.filter(f => f.hasVideo && f.hasAudio);
+                const videoOnlyFormats = videoFormats.filter(f => f.hasVideo && !f.hasAudio);
                 
-                console.log('[Format Analyzer] ✅ Analysis complete in', elapsed, 's:');
-                console.log('   - Total formats:', formats.length);
-                console.log('   - Video formats:', videoFormats.length);
-                console.log('   - Lowest quality:', lowestQuality ? lowestQuality.format_id : 'N/A');
+                // Select lowest quality from preferred options
+                let recommendedFormat = combinedFormats.sort((a, b) => a.quality - b.quality)[0] 
+                                      || videoOnlyFormats.sort((a, b) => a.quality - b.quality)[0]
+                                      || formats[0];
+                
+                console.log('\n[Format Analyzer] ✅ Analysis complete in', elapsed, 's:');
+                console.log('   📊 Total MP4-compatible formats:', formats.length);
+                console.log('   🎬 Video formats:', videoFormats.length);
+                console.log('   🔀 Combined (video+audio):', combinedFormats.length);
+                console.log('   🎥 Video-only:', videoOnlyFormats.length);
+                console.log('');
+                console.log('   📋 Available MP4 formats (sorted by quality):');
+                
+                // Log all available formats for transparency
+                const allSorted = [...formats].sort((a, b) => a.quality - b.quality || a.filesize - b.filesize);
+                allSorted.slice(0, 10).forEach((f, i) => {
+                    const size = f.filesize ? Math.round(f.filesize / 1024 / 1024) + 'MB' : 
+                                 f.filesize_approx ? '~' + Math.round(f.filesize_approx / 1024 / 1024) + 'MB' : 'unknown';
+                    console.log(`      ${i + 1}. ${f.format_id.padEnd(12)} | ${f.resolution.padEnd(12)} | ${f.vcodec.padEnd(15)} | ${f.acodec.padEnd(10)} | ${size}`);
+                });
+                if (allSorted.length > 10) {
+                    console.log(`      ... and ${allSorted.length - 10} more formats`);
+                }
+                console.log('');
+                console.log('   ✅ Recommended (lowest quality):', recommendedFormat ? recommendedFormat.format_id : 'N/A');
+                if (recommendedFormat) {
+                    console.log('      Resolution:', recommendedFormat.resolution);
+                    console.log('      Codecs:', recommendedFormat.vcodec + '/' + recommendedFormat.acodec);
+                    if (recommendedFormat.filesize || recommendedFormat.filesize_approx) {
+                        const size = recommendedFormat.filesize || recommendedFormat.filesize_approx;
+                        console.log('      Size:', Math.round(size / 1024 / 1024), 'MB');
+                    }
+                }
                 
                 resolve({
                     videoInfo: videoInfo,
                     allFormats: formats,
                     videoFormats: videoFormats,
-                    recommendedFormat: lowestQuality,
+                    combinedFormats: combinedFormats,
+                    videoOnlyFormats: videoOnlyFormats,
+                    recommendedFormat: recommendedFormat,
                     analysisTime: elapsed
                 });
                 
