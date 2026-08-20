@@ -304,31 +304,8 @@ async function generateMinimalCookieFile(silent) {
     }
 }
 
-// API Endpoint: Trigger auto-generation
-app.get('/api/auth/auto-generate-cookies', async function(req, res) {
-    console.log('\n[API] Auto-generate cookies requested');
-    
-    try {
-        const result = await autoGenerateCookies({ forceRegenerate: true });
-        
-        res.json({
-            success: result.success,
-            method: result.method,
-            message: result.message,
-            cookieFilePath: AUTH_CONFIG.cookieFilePath,
-            cookieFileExists: checkCookieFile(),
-            timestamp: new Date().toISOString()
-        });
-    } catch (err) {
-        console.error('[Auto-Cookie] Error:', err.message);
-        res.status(500).json({
-            success: false,
-            error: err.message
-        });
-    }
-});
-
 // Auto-generate on server startup (if no cookie file exists)
+// NOTE: API endpoint registered AFTER app is initialized (see below)
 let cookieGenerationPromise = null;
 function initAutoCookieGeneration() {
     cookieGenerationPromise = autoGenerateCookies({ silent: true }).then(result => {
@@ -740,6 +717,34 @@ let DOWNLOADS_DIR = DEFAULT_DOWNLOADS_DIR;
 // Download queue for sequential mode
 downloadQueue = [];
 let isProcessingQueue = false;
+
+// =============================================================================
+// AUTO-COOKIE GENERATION API ENDPOINT (must be AFTER app is initialized)
+// =============================================================================
+
+// API Endpoint: Trigger auto-generation of cookies.txt
+app.get('/api/auth/auto-generate-cookies', async function(req, res) {
+    console.log('\n[API] Auto-generate cookies requested');
+    
+    try {
+        const result = await autoGenerateCookies({ forceRegenerate: true });
+        
+        res.json({
+            success: result.success,
+            method: result.method,
+            message: result.message,
+            cookieFilePath: AUTH_CONFIG.cookieFilePath,
+            cookieFileExists: checkCookieFile(),
+            timestamp: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error('[Auto-Cookie] Error:', err.message);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+});
 let currentDownloadMode = 'batch'; // 'batch' or 'sequential'
 let maxConcurrentDownloads = 5; // For batch mode (increased)
 
