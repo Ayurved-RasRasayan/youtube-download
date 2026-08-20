@@ -1355,7 +1355,7 @@ function extractChannelId(url) {
 // Fetch channel info using yt-dlp
 function fetchChannelInfo(channelId, channelUrl) {
     return new Promise((resolve, reject) => {
-        const cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies "" + AUTH_CONFIG.cookieFilePath + "" --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "' + channelUrl + '"';
+        const cmd = `yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies "${AUTH_CONFIG.cookieFilePath}" --remote-components ejs:github --flat-playlist --print "%(id)s\\t%(title)s\\t%(duration)s\\t%(upload_date)s\\t%(view_count)s\\t%(is_live)s" "${channelUrl}"`;
         
         exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
             if (error) {
