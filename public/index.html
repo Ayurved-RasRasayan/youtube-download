@@ -383,6 +383,25 @@
             color: #bf360c;
         }
 
+        /* Email Auth Help Text */
+        .email-auth-help {
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 6px;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            font-size: 12px;
+            color: #e65100;
+            line-height: 1.5;
+        }
+
+        .email-auth-help code {
+            background: rgba(230, 81, 0, 0.1);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+            font-size: 11px;
+        }
+
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 30px rgba(255,0,0,0.4);
@@ -1259,17 +1278,23 @@ label:has(select[id*='quality' i]) {
                     <div class="email-auth-header">
                         <span class="email-auth-icon">🔐</span>
                         <span class="email-auth-title">Manual Login Required</span>
-                        <span class="email-auth-subtitle">Auto-authentication failed. Enter your Gmail to continue.</span>
+                        <span class="email-auth-subtitle">Auto-authentication failed. Enter your Liked Videos playlist URL or try again.</span>
                     </div>
                     <div class="email-input-group">
-                        <input type="email" 
+                        <input type="text" 
                                id="youtubeEmailInput" 
-                               placeholder="your.email@gmail.com" 
+                               placeholder="https://www.youtube.com/playlist?list=LL..." 
                                class="email-input"
                                onkeypress="if(event.key === 'Enter') loadMyLikedVideosWithEmail()">
                         <button class="btn btn-email-submit" onclick="loadMyLikedVideosWithEmail()" id="emailSubmitBtn">
-                            🔑 Login & Fetch
+                            🔑 Fetch Videos
                         </button>
+                    </div>
+                    <div class="email-auth-help">
+                        <strong>💡 How to get your Liked Videos URL:</strong><br>
+                        1. Open YouTube in browser → Click <strong>Library</strong> → <strong>Liked videos</strong><br>
+                        2. Copy the FULL URL from address bar<br>
+                        3. Paste it above (looks like: <code>...playlist?list=LLXXXXX</code>)
                     </div>
                     <div class="email-auth-options">
                         <button class="btn-text" onclick="hideEmailAuth()">✕ Cancel</button>
@@ -1808,22 +1833,26 @@ label:has(select[id*='quality' i]) {
             }
         }
 
-        // Load My Liked Videos with Manual Email Authentication (Fallback)
+        // Load My Liked Videos with Manual Email/URL Authentication (Fallback)
         async function loadMyLikedVideosWithEmail() {
-            console.log('[My Liked Videos Email] Fetching with manual email...');
+            console.log('[My Liked Videos Email/URL] Fetching with manual input...');
             
             const emailInput = document.getElementById('youtubeEmailInput');
-            const email = emailInput.value.trim();
+            const input = emailInput.value.trim();
             
-            // Validate email
-            if (!email) {
-                showNotification('Please enter your Gmail address', 'error');
+            // Validate input (accept URL or email)
+            if (!input) {
+                showNotification('Please enter your Liked Videos URL or Gmail address', 'error');
                 emailInput.focus();
                 return;
             }
             
-            if (!email.includes('@') || !email.includes('.')) {
-                showNotification('Please enter a valid email address', 'error');
+            // Accept: YouTube playlist URLs OR emails
+            const isPlaylistUrl = input.includes('youtube.com/playlist') || input.includes('youtu.be');
+            const isEmail = input.includes('@') && input.includes('.');
+            
+            if (!isPlaylistUrl && !isEmail) {
+                showNotification('Please enter a valid YouTube playlist URL or email address', 'error');
                 emailInput.focus();
                 return;
             }
@@ -1833,12 +1862,13 @@ label:has(select[id*='quality' i]) {
                 return;
             }
             
-            showLoading(true, `🔑 Authenticating with ${email}...\nThis may take 15-45 seconds...`);
+            const displayText = isPlaylistUrl ? 'Playlist URL' : (input.split('@')[0] + '@...');
+            showLoading(true, `🔑 Fetching videos using ${displayText}...\nThis may take 15-45 seconds...`);
             
             // Disable submit button during request
             const submitBtn = document.getElementById('emailSubmitBtn');
             const originalSubmitText = submitBtn.innerHTML;
-            submitBtn.innerHTML = '⏳ Authenticating...';
+            submitBtn.innerHTML = '⏳ Fetching...';
             submitBtn.disabled = true;
             
             try {
@@ -1846,24 +1876,24 @@ label:has(select[id*='quality' i]) {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ 
-                        email: email,
-                        forceEmailAuth: true  // Force email auth method
+                        email: input,  // Can be email or playlist URL
+                        forceEmailAuth: true  // Force manual auth method
                     })
                 });
                 
                 const data = await response.json();
 
                 if (!response.ok) {
-                    throw new Error(data.error || 'Failed to authenticate with email');
+                    throw new Error(data.error || 'Failed to authenticate');
                 }
 
                 // Success!
-                showNotification(`✅ Authenticated as ${email}! Found ${data.channel?.videos?.length || 0} liked videos.`, 'success');
+                showNotification(`✅ Found ${data.channel?.videos?.length || 0} videos!`, 'success');
                 
                 // Hide email section
                 hideEmailAuth();
                 
-                // Clear email field for privacy
+                // Clear input field for privacy
                 emailInput.value = '';
                 
                 // Refresh channels list
@@ -1871,7 +1901,8 @@ label:has(select[id*='quality' i]) {
                 
                 // Scroll to liked videos card
                 setTimeout(() => {
-                    const likedCard = document.querySelector('.channel-card[data-liked="true"]');
+                    const likedCard = document.querySelector('.channel-card[data-liked="true"]') || 
+                                     document.querySelector('.channel-card');
                     if (likedCard) {
                         likedCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
                         likedCard.style.animation = 'pulse 1s ease-in-out 3';
@@ -1879,7 +1910,7 @@ label:has(select[id*='quality' i]) {
                 }, 500);
                 
             } catch (error) {
-                console.error('[My Liked Videos Email Error]:', error);
+                console.error('[My Liked Videos Email/URL Error]:', error);
                 showNotification(error.message, 'error');
                 
                 // Re-enable submit button so user can retry

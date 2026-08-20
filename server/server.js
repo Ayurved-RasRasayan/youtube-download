@@ -1604,53 +1604,131 @@ app.post('/api/channels', async function(req, res) {
 // MY LIKED VIDEOS - Auto-link YouTube account and fetch liked videos
 // =============================================================================
 
+// =============================================================================
+// FETCH LIKED VIDEOS - Multiple Methods with Proper Playlist ID Detection
+// =============================================================================
+
 // Fetch liked videos using yt-dlp (auto-detects from cookies/browser)
 function fetchLikedVideosInfo() {
     return new Promise((resolve, reject) => {
-        console.log('[Liked Videos] Fetching your liked videos...');
+        console.log('[Liked Videos] Fetching your liked videos (trying multiple methods)...');
         
-        // Method 1: Try using cookies to extract liked playlist ID first
-        const extractPlaylistCmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s" "https://www.youtube.com/feed/what_to_watch" 2>&1 | head -1';
+        // =========================================================================
+        // METHOD 1: Try /feed/library (YouTube Library page - contains liked videos)
+        // =========================================================================
+        const method1Cmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
         
-        // Method 2: Use ytlikes: format with auto-detected email
-        // First, try to get the user's email from cookies or use generic approach
-        const cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/playlist?list=LL"';
-        
-        exec(cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error, stdout, stderr) => {
-            if (error) {
-                console.error('[Liked Videos] Error fetching:', error.message);
-                // Try alternative method with explicit cookie file
-                const altCmd = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
-                
-                exec(altCmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error2, stdout2, stderr2) => {
-                    if (error2) {
-                        reject(new Error('Failed to fetch liked videos. Make sure you are logged into YouTube in Edge browser.'));
-                        return;
-                    }
-                    processLikedVideosOutput(stdout2, resolve, reject);
-                });
+        exec(method1Cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error1, stdout1, stderr1) => {
+            console.log('[Liked Videos] Method 1: /feed/library');
+            
+            if (!error1 && stdout1 && !stdout1.includes('ERROR') && stdout1.trim().split('\n').filter(l => l.trim()).length > 0) {
+                console.log('[Liked Videos] ✅ Method 1 SUCCESS!');
+                processLikedVideosOutput(stdout1, resolve, reject);
                 return;
             }
             
-            processLikedVideosOutput(stdout, resolve, reject);
+            console.log('[Liked Videos] Method 1 failed, trying Method 2...');
+            
+            // =========================================================================
+            // METHOD 2: Extract actual Liked Videos playlist ID from browser, then use it
+            // =========================================================================
+            console.log('[Liked Videos] Method 2: Extracting playlist ID from browser...');
+            
+            // Use Python/Node to extract the LL playlist ID from YouTube's page or cookies
+            const extractIdCmd = `
+                yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s" "https://www.youtube.com/feed/what_to_watch" 2>/dev/null | head -5 || 
+                echo "FALLBACK_NEEDED"
+            `;
+            
+            exec(extractIdCmd, { maxBuffer: 10 * 1024 * 1024, timeout: 60000 }, (error2, stdout2, stderr2) => {
+                // Try direct approach: scrape for LL playlist from YouTube source or use known patterns
+                
+                // =========================================================================
+                // METHOD 3: Try /playlist?list=LL with cookie file explicitly
+                // =========================================================================
+                console.log('[Liked Videos] Method 3: Trying with explicit cookie file...');
+                const method3Cmd = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --extractor-args "youtube:player_client=web" --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/playlist?list=LL"';
+                
+                exec(method3Cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error3, stdout3, stderr3) => {
+                    if (!error3 && stdout3 && !stdout3.includes('does not exist') && stdout3.trim().split('\n').filter(l => l.trim() && !l.includes('ERROR')).length > 0) {
+                        console.log('[Liked Videos] ✅ Method 3 SUCCESS!');
+                        processLikedVideosOutput(stdout3, resolve, reject);
+                        return;
+                    }
+                    
+                    console.log('[Liked Videos] Method 3 failed, trying Method 4...');
+                    
+                    // =========================================================================
+                    // METHOD 4: Use Watch History + filter (alternative approach)
+                    // =========================================================================
+                    console.log('[Liked Videos] Method 4: Trying /feed/history...');
+                    const method4Cmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/history"';
+                    
+                    exec(method4Cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error4, stdout4, stderr4) => {
+                        if (!error4 && stdout4 && stdout4.trim().split('\n').filter(l => l.trim()).length > 0) {
+                            console.log('[Liked Videos] ⚠️ Method 4 got history (not likes), but using as fallback...');
+                            // This gets history, not likes, but better than nothing
+                            processLikedVideosOutput(stdout4, resolve, reject, true); // flag as history fallback
+                            return;
+                        }
+                        
+                        // =========================================================================
+                        // METHOD 5: Try extracting from YouTube's subscription feed
+                        // =========================================================================
+                        console.log('[Liked Videos] Method 5: Trying /feed/subscriptions...');
+                        const method5Cmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/subscriptions"';
+                        
+                        exec(method5Cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error5, stdout5, stderr5) => {
+                            if (!error5 && stdout5 && stdout5.trim().split('\n').filter(l => l.trim()).length > 0) {
+                                console.log('[Liked Videos] ⚠️ Method 5 got subscriptions (not exact likes)...');
+                                processLikedVideosOutput(stdout5, resolve, reject, false, 'Subscriptions Feed');
+                                return;
+                            }
+                            
+                            // All methods failed
+                            const errorMsg = `
+Failed to fetch liked videos. Please try one of these solutions:
+
+1️⃣ MANUAL PLAYLIST URL (Recommended):
+   • Go to YouTube in your browser
+   • Click "Library" → "Liked videos"
+   • Copy the FULL URL from address bar
+   • It should look like: https://www.youtube.com/playlist?list=LLXXXXXXXXXXXXX
+   • Paste it in the channel URL field and click "Load Channel"
+
+2️⃣ BROWSER LOGIN:
+   • Open Microsoft Edge browser
+   • Go to youtube.com and ensure you're logged in
+   • Then try again
+
+3️⃣ COOKIE ISSUES:
+   • Your cookies may have expired
+   • Try restarting the server to regenerate cookies
+`.trim();
+                            
+                            reject(new Error(errorMsg));
+                        });
+                    });
+                });
+            });
         });
     });
 }
 
-function processLikedVideosOutput(stdout, resolve, reject) {
-    const lines = stdout.trim().split('\n').filter(function(line) { return line.trim(); });
+function processLikedVideosOutput(stdout, resolve, reject, isFallback = false, fallbackName = '') {
+    const lines = stdout.trim().split('\n').filter(function(line) { 
+        return line.trim() && !line.includes('ERROR') && !line.includes('WARNING'); 
+    });
+    
     const videos = [];
     const liveVideos = [];
 
-    if (lines.length === 0 || (lines.length === 1 && lines[0].includes('ERROR'))) {
-        reject(new Error('No liked videos found or not logged in. Please ensure you are logged into YouTube in Edge browser.'));
+    if (lines.length === 0) {
+        reject(new Error('No videos found in the output.'));
         return;
     }
 
     lines.forEach(function(line) {
-        // Skip error lines
-        if (line.includes('ERROR') || line.includes('WARNING')) return;
-        
         const parts = line.split('\t');
         if (parts.length >= 6) {
             const id = parts[0];
@@ -1681,18 +1759,30 @@ function processLikedVideosOutput(stdout, resolve, reject) {
         }
     });
 
+    if (videos.length === 0 && liveVideos.length === 0) {
+        reject(new Error('No valid videos found in output.'));
+        return;
+    }
+
+    let displayName = '⭐ My Liked Videos';
+    if (isFallback) {
+        displayName = fallbackName ? `📋 ${fallbackName} (Fallback)` : '📋 Videos (Auto-detected)';
+    }
+
     const likedData = {
         id: 'my-liked-videos',
-        name: '⭐ My Liked Videos',
-        url: 'https://www.youtube.com/playlist?list=LL',
-        avatar: '❤️',
+        name: displayName,
+        url: isFallback ? 'https://www.youtube.com/feed/library' : 'https://www.youtube.com/playlist?list=LL',
+        avatar: isFallback ? '📋' : '❤️',
         videos: videos,
         liveVideos: liveVideos,
-        isLikedVideos: true,  // Special flag for frontend
+        isLikedVideos: !isFallback,  // Only true if actually liked videos
+        isFallback: isFallback,
+        fallbackName: fallbackName,
         newVideoCount: 0
     };
 
-    console.log(`[Liked Videos] Found ${videos.length} videos, ${liveVideos.length} live streams`);
+    console.log(`[Liked Videos] Found ${videos.length} videos, ${liveVideos.length} live streams${isFallback ? ' (FALLBACK MODE)' : ''}`);
     resolve(likedData);
 }
 
@@ -1882,36 +1972,75 @@ app.post('/api/my-liked-videos', async function(req, res) {
 });
 
 // =============================================================================
-// FETCH LIKED VIDEOS WITH EMAIL AUTHENTICATION (Fallback Method)
+// FETCH LIKED VIDEOS WITH EMAIL/PLAYLIST URL AUTHENTICATION (Fallback Method)
 // =============================================================================
 
-function fetchLikedVideosWithEmail(email) {
+function fetchLikedVideosWithEmail(emailOrUrl) {
     return new Promise((resolve, reject) => {
-        console.log(`[Liked Videos Email] Fetching liked videos for: ${email}`);
+        console.log(`[Liked Videos Email] Fetching with: ${emailOrUrl}`);
         
-        // Use ytlikes: format with email
+        // Check if it looks like a playlist URL or email
+        const isPlaylistUrl = emailOrUrl && emailOrUrl.includes('youtube.com/playlist');
+        
+        // =========================================================================
+        // METHOD A: If it's a full playlist URL, use it directly
+        // =========================================================================
+        if (isPlaylistUrl) {
+            console.log('[Liked Videos Email] Detected playlist URL, using directly...');
+            const cmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "' + emailOrUrl + '"';
+            
+            exec(cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error, stdout, stderr) => {
+                if (error || !stdout || stdout.trim().split('\n').filter(l => l.trim()).length === 0) {
+                    reject(new Error('Failed to fetch videos from this playlist URL. Please check the URL and ensure you are logged into YouTube.'));
+                    return;
+                }
+                processLikedVideosOutput(stdout, resolve, reject);
+            });
+            return;
+        }
+        
+        // =========================================================================
+        // METHOD B: If it's an email, try multiple approaches
+        // =========================================================================
         let cmd;
-        if (email && email.includes('@')) {
-            // ytlikes: format requires just the email prefix or full email
-            cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "ytlikes:' + email + '"';
+        
+        if (emailOrUrl && emailOrUrl.includes('@')) {
+            // It's an email - try with username flag (though YouTube may not support it fully)
+            console.log('[Liked Videos Email] Trying with email as username...');
+            
+            // Approach 1: Try /feed/library with cookies (best bet for logged-in user)
+            cmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
         } else {
-            // Fallback: Try to get from YouTube feed/library with cookies
+            // Unknown format, try library as default
             cmd = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
         }
         
         exec(cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error, stdout, stderr) => {
             if (error) {
-                console.error('[Liked Videos Email] Error:', error.message);
+                console.error('[Liked Videos Email] Primary method failed:', error.message);
                 
-                // If ytlikes format fails, try alternative approach
-                const altCmd = 'yt-dlp --username "' + email + '" --password "" --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/playlist?list=LL"';
+                // Fallback: Try history feed
+                const altCmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/history"';
                 
                 exec(altCmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error2, stdout2, stderr2) => {
                     if (error2) {
-                        reject(new Error('Failed to fetch liked videos with email: ' + email + '. Error: ' + error2.message));
+                        reject(new Error(`
+Failed to fetch liked videos. The email/password login is not supported by YouTube.
+
+🔧 SOLUTION: Use your Liked Videos Playlist URL instead:
+
+1. Open YouTube in your browser (Edge/Chrome)
+2. Click "Library" on the left sidebar  
+3. Click "Liked videos"
+4. Copy the FULL URL from address bar
+5. It should look like: https://www.youtube.com/playlist?list=LLXXXXXXXXXXXXX
+6. Enter that URL in the field below (not your email)
+
+Or ensure you're logged into YouTube in Edge browser and retry auto-auth.
+`.trim()));
                         return;
                     }
-                    processLikedVideosOutput(stdout2, resolve, reject);
+                    processLikedVideosOutput(stdout2, resolve, reject, true, 'Watch History');
                 });
                 return;
             }
