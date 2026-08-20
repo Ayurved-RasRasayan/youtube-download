@@ -9,6 +9,52 @@ const fs = require('fs');
 const os = require('os');
 
 // =============================================================================
+// PATH CONVERSION - Convert Cygwin/Unix paths to Native OS paths
+// =============================================================================
+
+function toNativePath(unixStylePath) {
+    // If already a native Windows path (starts with drive letter), return as-is
+    if (/^[A-Za-z]:\\/.test(unixStylePath) || /^[A-Za-z]:\//.test(unixStylePath)) {
+        return unixStylePath;
+    }
+    
+    // Convert Cygwin/MSYS paths (/c/Users/... -> C:\Users\...)
+    if (unixStylePath.startsWith('/') && unixStylePath.length >= 3 && 
+        /^[a-zA-Z]/.test(unixStylePath.charAt(1))) {
+        // Looks like /c/path or /d/path - convert to C:\path or D:\path
+        const driveLetter = unixStylePath.charAt(1).toUpperCase();
+        const restOfPath = unixStylePath.slice(2).replace(/\//g, '\\');
+        const windowsPath = driveLetter + ':\\' + restOfPath;
+        
+        console.log('[Path Conversion] Cygwin -> Windows:');
+        console.log('   FROM:', unixStylePath);
+        console.log('   TO:  ', windowsPath);
+        
+        return windowsPath;
+    }
+    
+    // For other Unix-style paths, use path.resolve to get absolute path
+    const resolved = path.resolve(unixStylePath);
+    console.log('[Path Conversion] Resolved:', unixStylePath, '->', resolved);
+    
+    return resolved;
+}
+
+function getNativeCookiePath() {
+    const originalPath = AUTH_CONFIG.cookieFilePath;
+    const nativePath = toNativePath(originalPath);
+    
+    // Update config with native path
+    AUTH_CONFIG.cookieFilePath = nativePath;
+    
+    console.log('[Cookie Path] Original:', originalPath);
+    console.log('[Cookie Path] Native:   ', nativePath);
+    
+    return nativePath;
+}
+
+
+// =============================================================================
 // ROBUST PATH RESOLUTION - Windows/Cygwin Compatible
 // =============================================================================
 
@@ -80,7 +126,9 @@ const AUTH_CONFIG = {
     browserSources: ['edge', 'chrome', 'firefox', 'brave'],
     
     // Cookie file path (Netscape format)
-    cookieFilePath: path.join(__dirname, '../cookies.txt'),
+    cookieFilePath: (process.platform === 'win32' || process.platform === 'cygwin') 
+        ? toNativePath(path.join(__dirname, '../cookies.txt'))
+        : path.join(__dirname, '../cookies.txt'),
     
     // YouTube API key (optional - for API v3 method)
     youtubeApiKey: process.env.YOUTUBE_API_KEY || '',
@@ -2726,6 +2774,10 @@ app.delete('/api/downloads/clear', (req, res) => {
     res.json({ success: true, message: `Cleared ${clearedCount} downloads`, clearedCount: clearedCount });
 });
 
+
+// Convert cookie path to native format at startup
+console.log('\n[Startup] Converting paths for OS compatibility...');
+getNativeCookiePath();
 app.listen(PORT, function() {
     console.log('');
     console.log('╔══════════════════════════════════════════╗');
