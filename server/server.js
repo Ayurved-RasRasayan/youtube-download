@@ -675,7 +675,7 @@ app.post('/api/channel/info', async (req, res) => {
 });
 
 // Video info endpoint
-app.post/api/video/info', async (req, res) => {
+app.post('/api/video/info', async (req, res) => {
     try {
         const { url } = req.body;
         
