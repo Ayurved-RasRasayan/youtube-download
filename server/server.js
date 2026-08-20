@@ -1189,17 +1189,19 @@ app.put('/api/settings', (req, res) => {
     }
 });
 
-// GET /api/channels - Return list of saved channels
+// GET /api/channels - Return list of saved channels (FRONTEND COMPATIBLE FORMAT!)
 app.get('/api/channels', (req, res) => {
     console.log('\n[Channels] GET /api/channels requested');
     console.log('[Channels] Total saved channels:', savedChannels.size);
     
     const channelsList = Array.from(savedChannels.values());
     
+    // FRONTEND EXPECTS: { channels: [...] }
+    // NOT: { data: [...], count: X }
+    console.log('[Channels] Returning', channelsList.length, 'channels in frontend-compatible format');
+    
     res.json({
-        success: true,
-        data: channelsList,
-        count: channelsList.length
+        channels: channelsList  // ← Frontend looks for this property!
     });
 });
 
@@ -1259,11 +1261,15 @@ app.post('/api/channels', async (req, res) => {
         console.log('[Channels] 💾 Channel saved with ID:', channel.id);
         console.log('='.repeat(80) + '\n');
         
-        // Return success response with full channel data
+        // Return success response with full channel data (FRONTEND COMPATIBLE FORMAT!)
+        // Frontend expects the channel object directly or in specific format
+        console.log('[Channels] Returning channel to frontend...');
+        
         res.status(201).json({
             success: true,
             message: 'Channel added successfully',
-            data: channel,
+            channel: channel,  // ← Include channel object at top level
+            channels: [channel],  // ← Also in array for loadChannelsFromServer()
             videos: channelData.videos,
             liveVideos: channelData.liveVideos,
             totalVideos: channelData.videos.length + channelData.liveVideos.length
