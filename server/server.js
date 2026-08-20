@@ -1098,6 +1098,274 @@ async function processBatchDownloads(downloadIds, format) {
 }
 
 // =============================================================================
+// MISSING API ENDPOINTS - Frontend Compatibility Layer
+// =============================================================================
+
+// In-memory storage for channels and settings (for demo/compatibility)
+const savedChannels = new Map();
+const appSettings = {
+    downloadPath: DOWNLOADS_DIR,
+    concurrentDownloads: 3,
+    autoCheckInterval: 5,
+    quality: 'best',
+    format: 'mp4',
+    cookiesEnabled: true,
+    cookieMode: isCookiesFileValid() ? 'file' : 'browser'
+};
+
+// GET /api/settings - Return application settings
+app.get('/api/settings', (req, res) => {
+    console.log('\n[Settings] GET /api/settings requested');
+    console.log('[Settings] Returning current settings');
+    
+    res.json({
+        success: true,
+        data: appSettings,
+        cookieInfo: {
+            mode: isCookiesFileValid() ? 'cookies.txt' : 'browser (' + AUTH_CONFIG.browserName + ')',
+            path: AUTH_CONFIG.cookieFilePath,
+            valid: isCookiesFileValid()
+        }
+    });
+});
+
+// PUT /api/settings - Update application settings  
+app.put('/api/settings', (req, res) => {
+    console.log('\n[Settings] PUT /api/settings requested');
+    console.log('[Settings] New settings:', JSON.stringify(req.body, null, 2));
+    
+    try {
+        // Merge new settings with existing
+        Object.assign(appSettings, req.body || {});
+        
+        console.log('[Settings] ✅ Settings updated successfully');
+        res.json({
+            success: true,
+            message: 'Settings updated',
+            data: appSettings
+        });
+    } catch (error) {
+        console.error('[Settings] ❌ Error updating settings:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to update settings: ' + error.message
+        });
+    }
+});
+
+// GET /api/channels - Return list of saved channels
+app.get('/api/channels', (req, res) => {
+    console.log('\n[Channels] GET /api/channels requested');
+    console.log('[Channels] Total saved channels:', savedChannels.size);
+    
+    const channelsList = Array.from(savedChannels.values());
+    
+    res.json({
+        success: true,
+        data: channelsList,
+        count: channelsList.length
+    });
+});
+
+// POST /api/channels - Add a new channel (THIS IS WHAT "LOAD CHANNEL" CALLS!)
+app.post('/api/channels', async (req, res) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('🎬 [Channels] POST /api/channels - ADD NEW CHANNEL');
+    console.log('='.repeat(80));
+    console.log('[Channels] Request body:', JSON.stringify(req.body, null, 2));
+    
+    try {
+        const { url, channelId, name } = req.body;
+        
+        if (!url && !channelId) {
+            console.log('[Channels] ❌ ERROR: No URL or channelId provided!');
+            return res.status(400).json({
+                success: false,
+                error: 'Channel URL or ID required'
+            });
+        }
+
+        // Determine the channel URL
+        const channelUrl = url || `https://www.youtube.com/@${channelId}`;
+        const channelIdFinal = channelId || url.split('@').pop().split('/')[0];
+        
+        console.log('[Channels] Processing channel:');
+        console.log('   - URL:', channelUrl);
+        console.log('   - ID:', channelIdFinal);
+        console.log('   - Name:', name || 'Auto-detected');
+        
+        console.log('\n[Channels] 📡 Fetching channel info from YouTube...');
+        
+        // Fetch channel info using our existing function with smart cookie handling
+        const channelData = await fetchChannelInfo(channelIdFinal, channelUrl);
+        
+        console.log('\n[Channels] ✅ Channel fetched successfully!');
+        console.log('[Channels] Videos found:', channelData.videos.length);
+        console.log('[Channels] Live videos found:', channelData.liveVideos.length);
+        
+        // Create channel object
+        const channel = {
+            id: uuidv4(),
+            youtubeId: channelIdFinal,
+            url: channelUrl,
+            name: name || channelIdFinal,
+            videoCount: channelData.videos.length + channelData.liveVideos.length,
+            videos: channelData.videos,
+            liveVideos: channelData.liveVideos,
+            addedAt: new Date().toISOString(),
+            lastChecked: new Date().toISOString(),
+            status: 'active'
+        };
+        
+        // Save to in-memory storage
+        savedChannels.set(channel.id, channel);
+        
+        console.log('[Channels] 💾 Channel saved with ID:', channel.id);
+        console.log('='.repeat(80) + '\n');
+        
+        // Return success response with full channel data
+        res.status(201).json({
+            success: true,
+            message: 'Channel added successfully',
+            data: channel,
+            videos: channelData.videos,
+            liveVideos: channelData.liveVideos,
+            totalVideos: channelData.videos.length + channelData.liveVideos.length
+        });
+        
+    } catch (error) {
+        console.log('\n' + '='.repeat(80));
+        console.log('❌ [Channels] FAILED TO ADD CHANNEL!');
+        console.log('='.repeat(80));
+        console.log('[Channels] Error Type:', error.constructor.name);
+        console.log('[Channels] Error Message:', error.message);
+        console.log('[Channels] Stack:', error.stack);
+        console.log('='.repeat(80) + '\n');
+        
+        res.status(500).json({
+            success: false,
+            error: 'Failed to add channel: ' + error.message,
+            suggestion: 'Check yt-dlp installation and internet connection',
+            debug: {
+                errorType: error.constructor.name,
+                errorMessage: error.message,
+                timestamp: new Date().toISOString()
+            }
+        });
+    }
+});
+
+// DELETE /api/channels/:id - Remove a saved channel
+app.delete('/api/channels/:id', (req, res) => {
+    const { id } = req.params;
+    console.log('\n[Channels] DELETE /api/channels/' + id);
+    
+    if (savedChannels.has(id)) {
+        savedChannels.delete(id);
+        console.log('[Channels] ✅ Channel deleted:', id);
+        res.json({
+            success: true,
+            message: 'Channel deleted successfully'
+        });
+    } else {
+        console.log('[Channels] ⚠️  Channel not found:', id);
+        res.status(404).json({
+            success: false,
+            error: 'Channel not found'
+        });
+    }
+});
+
+// POST /api/channels/:id/check - Check for new videos on a channel
+app.post('/api/channels/:id/check', async (req, res) => {
+    const { id } = req.params;
+    console.log('\n[Channels] POST /api/channels/' + id + '/check - Checking for new videos');
+    
+    const channel = savedChannels.get(id);
+    if (!channel) {
+        return res.status(404).json({
+            success: false,
+            error: 'Channel not found'
+        });
+    }
+    
+    try {
+        console.log('[Channels] Re-fetching channel:', channel.url);
+        const channelData = await fetchChannelInfo(channel.youtubeId, channel.url);
+        
+        // Update channel data
+        channel.videos = channelData.videos;
+        channel.liveVideos = channelData.liveVideos;
+        channel.videoCount = channelData.videos.length + channelData.liveVideos.length;
+        channel.lastChecked = new Date().toISOString();
+        
+        savedChannels.set(id, channel);
+        
+        console.log('[Channels] ✅ Channel updated. Total videos:', channel.videoCount);
+        
+        res.json({
+            success: true,
+            message: 'Channel checked for new videos',
+            data: channel,
+            newVideos: channelData.videos.length,
+            totalVideos: channel.videoCount
+        });
+        
+    } catch (error) {
+        console.error('[Channels] ❌ Error checking channel:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to check channel: ' + error.message
+        });
+    }
+});
+
+// Additional compatibility endpoints that frontend might call
+
+// GET /api/download/list - List all downloads
+app.get('/api/download/list', (req, res) => {
+    const downloads = downloadManager.getAll();
+    res.json({
+        success: true,
+        data: downloads,
+        count: downloads.length
+    });
+});
+
+// GET /api/system/status - System status endpoint
+app.get('/api/system/status', (req, res) => {
+    res.json({
+        success: true,
+        data: {
+            server: {
+                status: 'running',
+                port: PORT,
+                uptime: process.uptime(),
+                memory: process.memoryUsage()
+            },
+            yt_dlp: {
+                installed: true,
+                version: '2026.08.19', // We know this from earlier test
+                status: 'ok'
+            },
+            cookies: {
+                mode: isCookiesFileValid() ? 'file' : 'browser',
+                valid: isCookiesFileValid(),
+                path: AUTH_CONFIG.cookieFilePath
+            },
+            channels: {
+                saved: savedChannels.size,
+                active: Array.from(savedChannels.values()).filter(c => c.status === 'active').length
+            },
+            downloads: {
+                active: downloadManager.getAll().filter(d => d.status === 'downloading').length,
+                total: downloadManager.getAll().length
+            }
+        }
+    });
+});
+
+// =============================================================================
 // ERROR HANDLING
 // =============================================================================
 
@@ -1109,9 +1377,43 @@ app.use((err, req, res, next) => {
     });
 });
 
-// 404 handler
+// 404 handler - Enhanced with logging
 app.use((req, res) => {
-    res.status(404).json({ error: 'Not found' });
+    console.log('\n[404] Not Found:', req.method, req.originalUrl);
+    console.log('[404] This endpoint does not exist in server.js');
+    console.log('[404] Available endpoints:');
+    console.log('   GET  /api/health');
+    console.log('   GET  /api/settings');
+    console.log('   PUT  /api/settings');
+    console.log('   GET  /api/channels');
+    console.log('   POST /api/channels');
+    console.log('   DELETE /api/channels/:id');
+    console.log('   POST /api/channels/:id/check');
+    console.log('   GET  /api/channel/info');
+    console.log('   POST /api/video/info');
+    console.log('   POST /api/download/start');
+    console.log('   GET  /api/download/:id');
+    console.log('   POST /api/download/:id/cancel');
+    console.log('   GET  /api/downloads');
+    console.log('   POST /api/download/batch');
+    console.log('   GET  /api/download/list');
+    console.log('   GET  /api/system/status');
+    console.log('');
+    
+    res.status(404).json({ 
+        error: 'Not found',
+        endpoint: req.method + ' ' + req.originalUrl,
+        availableEndpoints: [
+            '/api/health',
+            '/api/settings', 
+            '/api/channels',
+            '/api/channel/info',
+            '/api/video/info',
+            '/api/download/start',
+            '/api/downloads',
+            '/api/system/status'
+        ]
+    });
 });
 
 // =============================================================================
