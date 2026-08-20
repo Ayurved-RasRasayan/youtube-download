@@ -1979,8 +1979,26 @@ function fetchLikedVideosWithEmail(emailOrUrl) {
     return new Promise((resolve, reject) => {
         console.log(`[Liked Videos Email] Fetching with: ${emailOrUrl}`);
         
-        // Check if it looks like a playlist URL or email
+        // Check input type
         const isPlaylistUrl = emailOrUrl && emailOrUrl.includes('youtube.com/playlist');
+        const isWatchWithList = emailOrUrl && emailOrUrl.includes('youtube.com/watch') && emailOrUrl.includes('list=');
+        const isEmail = emailOrUrl && emailOrUrl.includes('@');
+        
+        // Extract video ID if it's a watch URL
+        let videoId = null;
+        if (isWatchWithList) {
+            const videoMatch = emailOrUrl.match(/[?&]v=([^&]+)/);
+            if (videoMatch) {
+                videoId = videoMatch[1];
+                console.log(`[Liked Videos Email] Extracted video ID from watch URL: ${videoId}`);
+            }
+            
+            // Extract list parameter to see if it's LL (liked videos)
+            const listMatch = emailOrUrl.match(/[?&]list=([^&]+)/);
+            if (listMatch) {
+                console.log(`[Liked Videos Email] List parameter: ${listMatch[1]} (LL prefix = Liked Videos)`);
+            }
+        }
         
         // =========================================================================
         // METHOD A: If it's a full playlist URL, use it directly
@@ -1995,6 +2013,74 @@ function fetchLikedVideosWithEmail(emailOrUrl) {
                     return;
                 }
                 processLikedVideosOutput(stdout, resolve, reject);
+            });
+            return;
+        }
+        
+        // =========================================================================
+        // METHOD B: If it's a watch URL with list= parameter (user's case!)
+        // =========================================================================
+        if (isWatchWithList && videoId) {
+            console.log('[Liked Videos Email] Detected watch URL with list parameter - trying to get Liked Videos...');
+            
+            // Try multiple methods to get the full liked videos playlist
+            
+            // Method 1: Try /feed/library (requires browser login)
+            const cmd1 = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
+            
+            exec(cmd1, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error, stdout, stderr) => {
+                if (!error && stdout && stdout.trim().split('\n').filter(l => l.trim()).length > 0) {
+                    console.log('[Liked Videos Email] ✅ Success with /feed/library!');
+                    processLikedVideosOutput(stdout, resolve, reject);
+                    return;
+                }
+                
+                console.log('[Liked Videos Email] /feed/library failed, trying /feed/history...');
+                
+                // Method 2: Try history feed
+                const cmd2 = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/history"';
+                
+                exec(cmd2, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error2, stdout2, stderr2) => {
+                    if (!error2 && stdout2 && stdout2.trim().split('\n').filter(l => l.trim()).length > 0) {
+                        console.log('[Liked Videos Email] ✅ Success with /feed/history (fallback)!');
+                        processLikedVideosOutput(stdout2, resolve, reject, true, 'Watch History');
+                        return;
+                    }
+                    
+                    console.log('[Liked Videos Email] History failed, trying cookies.txt file...');
+                    
+                    // Method 3: Try with cookies.txt file
+                    const cmd3 = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
+                    
+                    exec(cmd3, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error3, stdout3, stderr3) => {
+                        if (!error3 && stdout3 && stdout3.trim().split('\n').filter(l => l.trim()).length > 0) {
+                            console.log('[Liked Videos Email] ✅ Success with cookies.txt file!');
+                            processLikedVideosOutput(stdout3, resolve, reject);
+                            return;
+                        }
+                        
+                        // All methods failed - provide helpful error message
+                        console.error('[Liked Videos Email] All methods failed for watch URL with list');
+                        reject(new Error(`
+Could not fetch your Liked Videos automatically.
+
+📌 Your video (${videoId}) was detected as a Liked Video!
+
+🔧 SOLUTION - Export Cookies Manually:
+
+1. Install this Chrome extension: "Get cookies.txt LOCALLY"
+2. Go to youtube.com and log in
+3. Click the extension icon → "Export" → save as cookies.txt
+4. Move cookies.txt to: ${path.dirname(AUTH_CONFIG.cookieFilePath)}
+5. Restart server and try again
+
+OR - Use Full Playlist URL:
+1. Open YouTube → Library → Liked videos
+2. Copy the FULL URL (looks like: youtube.com/playlist?list=LLXXXXX)
+3. Paste that URL instead of the video link
+`.trim()));
+                    });
+                });
             });
             return;
         }

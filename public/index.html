@@ -1292,9 +1292,13 @@ label:has(select[id*='quality' i]) {
                     </div>
                     <div class="email-auth-help">
                         <strong>💡 How to get your Liked Videos URL:</strong><br>
-                        1. Open YouTube in browser → Click <strong>Library</strong> → <strong>Liked videos</strong><br>
-                        2. Copy the FULL URL from address bar<br>
-                        3. Paste it above (looks like: <code>...playlist?list=LLXXXXX</code>)
+                        <strong>Option 1 - Full Playlist URL:</strong><br>
+                        1. Open YouTube → Click <strong>Library</strong> → <strong>Liked videos</strong><br>
+                        2. Copy the FULL URL (looks like: <code>...playlist?list=LLXXXXX</code>)<br><br>
+                        <strong>Option 2 - Any Liked Video Link (NEW!):</strong><br>
+                        1. Open any video you've liked on YouTube<br>
+                        2. Copy its URL (looks like: <code>...watch?v=XXX&list=LL...</code>)<br>
+                        3. Paste it above - we'll detect it's from your Liked Videos!
                     </div>
                     <div class="email-auth-options">
                         <button class="btn-text" onclick="hideEmailAuth()">✕ Cancel</button>
@@ -1847,12 +1851,14 @@ label:has(select[id*='quality' i]) {
                 return;
             }
             
-            // Accept: YouTube playlist URLs OR emails
+            // Accept: YouTube playlist URLs, watch URLs with list= parameter, OR emails
             const isPlaylistUrl = input.includes('youtube.com/playlist') || input.includes('youtu.be');
+            const isWatchWithList = input.includes('youtube.com/watch') && input.includes('list=');
+            const isAnyYoutubeUrl = input.includes('youtube.com') || input.includes('youtu.be');
             const isEmail = input.includes('@') && input.includes('.');
             
-            if (!isPlaylistUrl && !isEmail) {
-                showNotification('Please enter a valid YouTube playlist URL or email address', 'error');
+            if (!isPlaylistUrl && !isWatchWithList && !isEmail) {
+                showNotification('Please enter a valid YouTube URL (playlist, video with list) or email address', 'error');
                 emailInput.focus();
                 return;
             }
