@@ -458,6 +458,90 @@
             50% { box-shadow: 0 0 20px rgba(255,0,0,0.8); }
         }
 
+        /* Already Downloaded Badge - Skip Feature */
+        .skipped-badge {
+            background: linear-gradient(135deg, #00c853, #00a043);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .skipped-badge::before {
+            content: '⏭️';
+            font-size: 0.7rem;
+        }
+
+        /* Video item that's already downloaded */
+        .video-item.downloaded-item {
+            opacity: 0.7;
+            border-left: 3px solid #00c853;
+            background: rgba(0, 200, 83, 0.05);
+        }
+
+        .video-item.downloaded-item:hover {
+            opacity: 1;
+            background: rgba(0, 200, 83, 0.1);
+        }
+
+        /* Download All New Button */
+        .download-new-btn {
+            background: linear-gradient(135deg, #2196F3, #1976D2) !important;
+            color: white !important;
+            border: none !important;
+            padding: 8px 16px !important;
+            border-radius: 6px !important;
+            cursor: pointer !important;
+            font-weight: bold !important;
+            font-size: 0.9rem !important;
+            transition: all 0.2s ease !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+        }
+
+        .download-new-btn:hover:not(:disabled) {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.4) !important;
+        }
+
+        .download-new-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed !important;
+        }
+
+        /* Sync Stats Display */
+        .sync-stats {
+            background: rgba(33, 150, 243, 0.1);
+            border: 1px solid rgba(33, 150, 243, 0.3);
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin: 10px 0;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            font-size: 0.85rem;
+        }
+
+        .sync-stat {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sync-stat-value {
+            font-weight: bold;
+            color: #2196F3;
+        }
+
+        .sync-stat.skipped .sync-stat-value {
+            color: #00c853;
+        }
+
         .video-list {
             display: none;
             grid-gap: 10px;
@@ -1662,6 +1746,146 @@ label:has(select[id*='quality' i]) {
             showNotification(`✅ Full channel download started! ${allVideos.length} items queued.`, 'success');
         }
 
+        // Download ONLY NEW (not yet downloaded) content from a channel
+        async function downloadAllNewFromChannel(channelId, channelName) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            // Filter to ONLY videos that are NOT already downloaded
+            const newVideos = [
+                ...(channel.videos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)),
+                ...(channel.liveVideos || []).filter(v => !(v.alreadyDownloaded || v.downloaded))
+            ];
+            
+            if (newVideos.length === 0) {
+                showNotification('🎉 All videos already downloaded! Nothing new to download.', 'success');
+                return;
+            }
+            
+            const skippedCount = (channel.syncStats?.alreadyDownloaded) || 
+                (channel.videos || []).filter(v => v.alreadyDownloaded || v.downloaded).length +
+                (channel.liveVideos || []).filter(v => v.alreadyDownloaded || v.downloaded).length;
+            
+            const confirmMsg = `Download ${newVideos.length} NEW items from "${channelName}"?\n\n` +
+                `⏭️ Skipping: ${skippedCount} already downloaded files\n` +
+                `🆕 New Videos: ${(channel.videos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)).length}\n` +
+                `🔴 New Lives: ${(channel.liveVideos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)).length}\n\n` +
+                `⚡ Format: AUTO (Lowest MP4 - Smart Detection)\n` +
+                `🚀 This will SKIP all existing files!`;
+                
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`🚀 Starting NEW downloads only: ${newVideos.length} items (${skippedCount} skipped)...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            // Download each NEW video with delay
+            for (let i = 0; i < newVideos.length; i++) {
+                const video = newVideos[i];
+                const type = video.isLive ? '🔴 Live' : '📹 Video';
+                showNotification(`[${i + 1}/${newVideos.length}] ${type}: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                // Add delay between downloads (except after last one)
+                if (i < newVideos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Batch download complete! ${newVideos.length} new items queued, ${skippedCount} skipped.`, 'success');
+        }
+
+        // Download only NEW videos from a specific folder (videos or lives)
+        async function downloadAllVideosNew(channelId, channelName, onlyLives = false) {
+            if (!isServerConnected) {
+                showNotification('Server not connected', 'error');
+                return;
+            }
+            
+            const channel = channels.find(c => c.id === channelId);
+            if (!channel) {
+                showNotification('Channel not found', 'error');
+                return;
+            }
+            
+            let videos = onlyLives ? channel.liveVideos : channel.videos;
+            if (!videos || videos.length === 0) {
+                showNotification(onlyLives ? 'No live streams to download' : 'No videos to download', 'info');
+                return;
+            }
+            
+            // Filter to ONLY new (not downloaded) videos
+            const newVideos = videos.filter(v => !(v.alreadyDownloaded || v.downloaded));
+            
+            if (newVideos.length === 0) {
+                showNotification(`✅ All ${onlyLives ? 'live streams' : 'videos'} already downloaded!`, 'info');
+                return;
+            }
+            
+            const skippedCount = videos.length - newVideos.length;
+            const confirmMsg = `Download ${newVideos.length} NEW ${onlyLives ? 'live stream(s)' : 'video(s)'} from "${channelName}"?\n\n` +
+                `⏭️ Skipping: ${skippedCount} already downloaded\n` +
+                `🆕 To Download: ${newVideos.length}`;
+                
+            if (!confirm(confirmMsg)) return;
+            
+            showNotification(`Starting download of ${newVideos.length} new items...`, 'info');
+            document.getElementById('downloadsPanel').classList.add('open');
+            
+            const batchDelay = parseInt(document.getElementById('batchDelay').value) || 2000;
+            
+            for (let i = 0; i < newVideos.length; i++) {
+                const video = newVideos[i];
+                showNotification(`[${i + 1}/${newVideos.length}] Starting: ${video.title}`, 'info');
+                
+                await downloadVideo(video.id, video.title, channelId, video.isLive);
+                
+                if (i < newVideos.length - 1 && batchDelay > 0) {
+                    await new Promise(resolve => setTimeout(resolve, batchDelay));
+                }
+            }
+            
+            showNotification(`✅ Complete! ${newVideos.length} downloaded, ${skippedCount} skipped.`, 'success');
+        }
+
+        // Open file location (for already downloaded files)
+        async function openFile(filePath) {
+            if (!filePath) {
+                showNotification('File path not available', 'error');
+                return;
+            }
+            
+            try {
+                // Call server to open file location
+                const response = await fetch('/api/open-file', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: filePath })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showNotification(`📁 Opening: ${filePath}`, 'info');
+                } else {
+                    showNotification(`Could not open file: ${result.error}`, 'error');
+                }
+            } catch (err) {
+                // Fallback: Try to open directly in browser
+                window.open(`file:///${filePath.replace(/\\/g, '/')}`, '_blank');
+            }
+        }
+
         // Track download progress
         function trackDownload(jobId, title) {
             const download = {
@@ -1821,6 +2045,15 @@ label:has(select[id*='quality' i]) {
                             </div>
                         </div>
                         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                            <!-- Download All New (only videos not yet downloaded) -->
+                            <button class="btn download-new-btn" 
+                                    onclick="downloadAllNewFromChannel('${channel.id}', '${escapeHtml(channel.name)}')"
+                                    ${(channel.syncStats && channel.syncStats.needDownload === 0) ? 'disabled' : ''}
+                                    title="Download only NEW videos (skip already downloaded)">
+                                🆕 Download New (${channel.syncStats?.needDownload || (channel.videos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)).length})
+                            </button>
+                            
+                            <!-- Download All (including re-downloads) -->
                             <button class="btn btn-primary" 
                                     onclick="downloadAllFromChannel('${channel.id}', '${escapeHtml(channel.name)}')"
                                     ${downloadableCount === 0 ? 'disabled' : ''}
@@ -1832,18 +2065,39 @@ label:has(select[id*='quality' i]) {
                             <button class="btn btn-secondary" onclick="refreshChannel('${channel.id}')">🔄</button>
                             <button class="btn btn-secondary" onclick="removeChannel('${channel.id}')">✕</button>
                         </div>
+                        
+                        ${channel.syncStats ? `
+                        <div class="sync-stats">
+                            <div class="sync-stat">
+                                📊 Total:
+                                <span class="sync-stat-value">${channel.syncStats.totalVideos}</span>
+                            </div>
+                            <div class="sync-stat skipped">
+                                ⏭️ Skipped:
+                                <span class="sync-stat-value">${channel.syncStats.alreadyDownloaded}</span>
+                            </div>
+                            <div class="sync-stat">
+                                🆕 Need Download:
+                                <span class="sync-stat-value">${channel.syncStats.needDownload}</span>
+                            </div>
+                            <div class="sync-stat skipped">
+                                📈 Skip Rate:
+                                <span class="sync-stat-value">${channel.syncStats.skipPercent}</span>
+                            </div>
+                        </div>
+                        ` : ''}
                     </div>
                     <div class="folder-structure">
                         <div class="folder">
                             <div class="folder-header" onclick="toggleFolder(this)">
                                 <span class="folder-icon">📂</span>
                                 <span class="folder-name">📹 Videos (${channel.videos?.length || 0})</span>
-                                <span class="folder-count">${(channel.videos || []).filter(v => v.isNew).length} new</span>
+                                <span class="folder-count">${(channel.videos || []).filter(v => v.isNew && !(v.alreadyDownloaded || v.downloaded)).length} new | ${(channel.videos || []).filter(v => v.alreadyDownloaded || v.downloaded).length} skipped</span>
                                 <button class="btn btn-download download-all-btn" 
-                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', false)"
-                                        ${(channel.videos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
-                                        title="Download all videos in this folder">
-                                    📥 All
+                                        onclick="event.stopPropagation(); downloadAllVideosNew('${channel.id}', '${escapeHtml(channel.name)}', false)"
+                                        ${(channel.videos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)).length === 0 ? 'disabled' : ''}
+                                        title="Download only new videos (skip downloaded)">
+                                    🆕 New
                                 </button>
                             </div>
                             <div class="video-list open">
@@ -1855,12 +2109,12 @@ label:has(select[id*='quality' i]) {
                             <div class="folder-header" onclick="toggleFolder(this)">
                                 <span class="folder-icon">📂</span>
                                 <span class="folder-name">🔴 Live Streams (${channel.liveVideos?.length || 0})</span>
-                                <span class="folder-count">${(channel.liveVideos || []).filter(v => v.isNew).length} new</span>
+                                <span class="folder-count">${(channel.liveVideos || []).filter(v => v.isNew && !(v.alreadyDownloaded || v.downloaded)).length} new | ${(channel.liveVideos || []).filter(v => v.alreadyDownloaded || v.downloaded).length} skipped</span>
                                 <button class="btn btn-download download-all-btn" 
-                                        onclick="event.stopPropagation(); downloadAllVideos('${channel.id}', '${escapeHtml(channel.name)}', true)"
-                                        ${(channel.liveVideos || []).filter(v => !v.downloaded).length === 0 ? 'disabled' : ''}
-                                        title="Download all live streams in this folder">
-                                    📥 All
+                                        onclick="event.stopPropagation(); downloadAllVideosNew('${channel.id}', '${escapeHtml(channel.name)}', true)"
+                                        ${(channel.liveVideos || []).filter(v => !(v.alreadyDownloaded || v.downloaded)).length === 0 ? 'disabled' : ''}
+                                        title="Download only new live streams (skip downloaded)">
+                                    🆕 New
                                 </button>
                             </div>
                             <div class="video-list open">
@@ -1898,15 +2152,35 @@ label:has(select[id*='quality' i]) {
 
         // Create video item HTML
         function createVideoItem(video, channelId) {
-            const newClass = video.isNew ? 'new-item' : '';
-            const newBadge = video.isNew ? '<span class="new-badge">NEW</span>' : '';
-            const downloadedBadge = video.downloaded ? '<span class="downloaded-badge">✓ Downloaded</span>' : '';
+            // Check if video is already downloaded (from backend sync)
+            const isDownloaded = video.alreadyDownloaded || video.downloaded;
+            
+            const newClass = (video.isNew && !isDownloaded) ? 'new-item' : '';
+            const downloadedClass = isDownloaded ? 'downloaded-item' : '';
+            
+            // Badge priority: Downloaded > New > Live
+            let statusBadge = '';
+            if (isDownloaded) {
+                // Show file info in tooltip
+                const fileInfo = video.fileInfo ? `${video.fileInfo.sizeFormatted}` : '';
+                statusBadge = `<span class="skipped-badge" title="✅ Already Downloaded${fileInfo ? '\nSize: ' + fileInfo : ''}\nFile: ${video.existingFile || 'Unknown'}\nMatch: ${video.matchType || 'Unknown'}">DOWNLOADED</span>`;
+            } else if (video.isNew) {
+                statusBadge = '<span class="new-badge">NEW</span>';
+            }
+            
             const liveIndicator = video.isLive 
                 ? '<span class="live-indicator"><span class="live-dot"></span>LIVE</span>' 
                 : '';
 
+            // Disable download button if already downloaded
+            const downloadDisabled = isDownloaded ? 'disabled' : '';
+            const downloadButtonText = isDownloaded ? '⏭️ Skip' : '⬇️ Download';
+            const downloadButtonTitle = isDownloaded 
+                ? `File exists: ${video.existingFile || 'Unknown'}\nSize: ${video.fileInfo?.sizeFormatted || 'Unknown'}`
+                : 'Download this video';
+
             return `
-                <div class="video-item ${newClass}">
+                <div class="video-item ${newClass} ${downloadedClass}">
                     <div class="video-thumbnail">
                         ${video.thumbnail?.startsWith('http') 
                             ? `<img src="${video.thumbnail}" alt="Thumbnail" onerror="this.parentElement.textContent='🎬'">` 
@@ -1914,22 +2188,33 @@ label:has(select[id*='quality' i]) {
                         }
                     </div>
                     <div class="video-info">
-                        <div class="video-title">${escapeHtml(video.title)} ${newBadge} ${downloadedBadge} ${liveIndicator}</div>
+                        <div class="video-title">${escapeHtml(video.title)} ${statusBadge} ${liveIndicator}</div>
                         <div class="video-meta">
                             <span>${video.duration}</span>
                             <span>${video.views}</span>
                             <span>${formatDate(video.publishedAt)}</span>
+                            ${isDownloaded ? `<span style="color: #00c853;">✓ ${video.fileInfo?.sizeFormatted || ''}</span>` : ''}
                         </div>
                     </div>
                     <div class="video-actions">
                         <button class="btn btn-download" 
-                                onclick="downloadVideo('${video.id}', '${escapeHtml(video.title).replace(/'/g, "\\'")}', '${channelId}', ${video.isLive})"
-                                ${video.downloaded ? 'disabled' : ''}>
-                            ${video.downloaded ? '✓ Done' : '⬇️ Download'}
+                                onclick="${isDownloaded ? '' : `downloadVideo('${video.id}', '${escapeHtml(video.title).replace(/'/g, "\\'")}', '${channelId}', ${video.isLive})`}"
+                                ${downloadDisabled}
+                                title="${downloadButtonTitle}">
+                            ${downloadButtonText}
                         </button>
-                        <a href="${video.url}" target="_blank" class="btn btn-secondary" style="padding: 8px 12px;">
-                            🔗
-                        </a>
+                        ${isDownloaded ? `
+                            <button class="btn btn-secondary" 
+                                    onclick="openFile('${(video.existingFilePath || '').replace(/\\/g, '/')}')"
+                                    title="Open file location: ${video.existingFile || ''}"
+                                    style="padding: 8px 12px;">
+                                📁
+                            </button>
+                        ` : `
+                            <a href="${video.url}" target="_blank" class="btn btn-secondary" style="padding: 8px 12px;">
+                                🔗
+                            </a>
+                        `}
                     </div>
                 </div>
             `;

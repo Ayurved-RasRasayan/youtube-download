@@ -1022,6 +1022,64 @@ app.post('/api/batch-check-downloaded', function(req, res) {
     res.json(results);
 });
 
+// API Endpoint: Open file location in system file explorer
+app.post('/api/open-file', function(req, res) {
+    const filePath = req.body.path;
+    
+    if (!filePath) {
+        return res.status(400).json({ error: 'File path is required' });
+    }
+    
+    console.log(`[Open File] Request to open: ${filePath}`);
+    
+    try {
+        // Check if file exists
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json({ error: 'File not found: ' + filePath });
+        }
+        
+        // Use platform-appropriate command to open file location
+        let command;
+        const platform = process.platform;
+        
+        if (platform === 'win32') {
+            // Windows: Open in Explorer and select file
+            command = `explorer /select,"${filePath}"`;
+        } else if (platform === 'darwin') {
+            // macOS: Open in Finder and select file
+            command = `open -R "${filePath}"`;
+        } else {
+            // Linux: Open containing folder
+            const dirPath = path.dirname(filePath);
+            command = `xdg-open "${dirPath}"`;
+        }
+        
+        exec(command, function(error) {
+            if (error) {
+                console.error('[Open File] Error:', error.message);
+                return res.status(500).json({ 
+                    success: false, 
+                    error: 'Failed to open file: ' + error.message 
+                });
+            }
+            
+            console.log(`[Open File] ✅ Opened: ${filePath}`);
+            res.json({ 
+                success: true, 
+                message: 'File location opened',
+                path: filePath
+            });
+        });
+        
+    } catch (err) {
+        console.error('[Open File] Exception:', err.message);
+        res.status(500).json({ 
+            success: false, 
+            error: err.message 
+        });
+    }
+});
+
 // =============================================================================
 // AUTO-COOKIE GENERATION API ENDPOINT (must be AFTER app is initialized)
 // =============================================================================
