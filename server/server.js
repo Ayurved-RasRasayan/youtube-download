@@ -1600,6 +1600,334 @@ app.post('/api/channels', async function(req, res) {
     }
 });
 
+// =============================================================================
+// MY LIKED VIDEOS - Auto-link YouTube account and fetch liked videos
+// =============================================================================
+
+// Fetch liked videos using yt-dlp (auto-detects from cookies/browser)
+function fetchLikedVideosInfo() {
+    return new Promise((resolve, reject) => {
+        console.log('[Liked Videos] Fetching your liked videos...');
+        
+        // Method 1: Try using cookies to extract liked playlist ID first
+        const extractPlaylistCmd = 'yt-dlp --cookies-from-browser edge --flat-playlist --print "%(id)s" "https://www.youtube.com/feed/what_to_watch" 2>&1 | head -1';
+        
+        // Method 2: Use ytlikes: format with auto-detected email
+        // First, try to get the user's email from cookies or use generic approach
+        const cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/playlist?list=LL"';
+        
+        exec(cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('[Liked Videos] Error fetching:', error.message);
+                // Try alternative method with explicit cookie file
+                const altCmd = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
+                
+                exec(altCmd, { maxBuffer: 100 * 1024 * 1024, timeout: 120000 }, (error2, stdout2, stderr2) => {
+                    if (error2) {
+                        reject(new Error('Failed to fetch liked videos. Make sure you are logged into YouTube in Edge browser.'));
+                        return;
+                    }
+                    processLikedVideosOutput(stdout2, resolve, reject);
+                });
+                return;
+            }
+            
+            processLikedVideosOutput(stdout, resolve, reject);
+        });
+    });
+}
+
+function processLikedVideosOutput(stdout, resolve, reject) {
+    const lines = stdout.trim().split('\n').filter(function(line) { return line.trim(); });
+    const videos = [];
+    const liveVideos = [];
+
+    if (lines.length === 0 || (lines.length === 1 && lines[0].includes('ERROR'))) {
+        reject(new Error('No liked videos found or not logged in. Please ensure you are logged into YouTube in Edge browser.'));
+        return;
+    }
+
+    lines.forEach(function(line) {
+        // Skip error lines
+        if (line.includes('ERROR') || line.includes('WARNING')) return;
+        
+        const parts = line.split('\t');
+        if (parts.length >= 6) {
+            const id = parts[0];
+            const title = parts[1] || 'Untitled';
+            const duration = parseInt(parts[2]) || 0;
+            const uploadDate = parts[3];
+            const viewCount = parseInt(parts[4]) || 0;
+            const isLive = parts[5] === 'True' || parts[5] === 'true';
+            
+            const video = {
+                id: id,
+                title: title,
+                duration: formatDuration(duration),
+                views: formatViews(viewCount),
+                viewCount: viewCount,
+                publishedAt: formatDate(uploadDate),
+                isLive: isLive,
+                isNew: false,
+                url: 'https://www.youtube.com/watch?v=' + id,
+                thumbnail: 'https://i.ytimg.com/vi/' + id + '/mqdefault.jpg'
+            };
+
+            if (video.isLive) {
+                liveVideos.push(video);
+            } else {
+                videos.push(video);
+            }
+        }
+    });
+
+    const likedData = {
+        id: 'my-liked-videos',
+        name: '⭐ My Liked Videos',
+        url: 'https://www.youtube.com/playlist?list=LL',
+        avatar: '❤️',
+        videos: videos,
+        liveVideos: liveVideos,
+        isLikedVideos: true,  // Special flag for frontend
+        newVideoCount: 0
+    };
+
+    console.log(`[Liked Videos] Found ${videos.length} videos, ${liveVideos.length} live streams`);
+    resolve(likedData);
+}
+
+// API Endpoint: Get My Liked Videos (auto-links via browser cookies OR manual email)
+app.post('/api/my-liked-videos', async function(req, res) {
+    console.log('\n[API] Fetching My Liked Videos...');
+    
+    const userEmail = req.body.email || req.query.email || '';
+    const forceEmailAuth = req.body.forceEmailAuth || false;
+    
+    try {
+        let likedData;
+        let authMethodUsed = 'browser-cookies';
+        
+        // =====================================================================
+        // METHOD 1: Try Auto Browser Cookie Authentication (Default)
+        // =====================================================================
+        if (!forceEmailAuth && !userEmail) {
+            console.log('[Liked Videos] Method 1: Trying browser cookie authentication...');
+            
+            try {
+                // Ensure we have fresh cookies
+                if (!checkCookieFile()) {
+                    console.log('[Liked Videos] No cookie file found, generating...');
+                    await autoGenerateCookies({ silent: false });
+                }
+                
+                // Try fetching with browser cookies
+                likedData = await fetchLikedVideosInfo();
+                authMethodUsed = 'browser-cookies';
+                console.log('[Liked Videos] ✅ Browser cookie authentication SUCCESS!');
+                
+            } catch (cookieError) {
+                console.error('[Liked Videos] ❌ Browser cookie auth failed:', cookieError.message);
+                console.log('[Liked Videos] Falling back to email authentication...');
+                
+                // Return error asking for email
+                return res.status(401).json({
+                    success: false,
+                    error: 'Auto-authentication failed. Please enter your Gmail address.',
+                    needsEmail: true,  // Frontend will show email input
+                    originalError: cookieError.message,
+                    suggestion: 'Enter your Gmail address to manually authenticate'
+                });
+            }
+        }
+        
+        // =====================================================================
+        // METHOD 2: Manual Email Authentication (Fallback)
+        // =====================================================================
+        else if (userEmail || forceEmailAuth) {
+            if (!userEmail && !forceEmailAuth) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Email address is required for manual authentication',
+                    needsEmail: true
+                });
+            }
+            
+            console.log(`[Liked Videos] Method 2: Using email authentication (${userEmail || 're-trying with stored email'})...`);
+            
+            try {
+                likedData = await fetchLikedVideosWithEmail(userEmail);
+                authMethodUsed = `email:${userEmail || 'unknown'}`;
+                console.log('[Liked Videos] ✅ Email authentication SUCCESS!');
+                
+            } catch (emailError) {
+                console.error('[Liked Videos] ❌ Email auth failed:', emailError.message);
+                throw new Error(`Email authentication failed: ${emailError.message}. Please check your email address and ensure you can log into YouTube.`);
+            }
+        }
+        
+        else {
+            throw new Error('No authentication method available');
+        }
+        
+        // Step 3: Check for new videos (compare against known)
+        const channelId = 'my-liked-videos';
+        if (!appData.knownVideos[channelId]) {
+            appData.knownVideos[channelId] = [];
+        }
+        
+        let newCount = 0;
+        likedData.videos.forEach(function(video) {
+            if (appData.knownVideos[channelId].indexOf(video.id) === -1) {
+                video.isNew = true;
+                newCount++;
+                appData.knownVideos[channelId].push(video.id);
+            }
+        });
+        
+        likedData.liveVideos.forEach(function(video) {
+            if (appData.knownVideos[channelId].indexOf(video.id) === -1) {
+                video.isNew = true;
+                newCount++;
+                appData.knownVideos[channelId].push(video.id);
+            }
+        });
+        
+        likedData.newVideoCount = newCount;
+        
+        // Step 4: AUTO-SYNC - Run skip detection on all liked videos
+        console.log(`[Liked Videos Sync] Checking ${likedData.videos.length + likedData.liveVideos.length} liked videos against existing files...`);
+        
+        let alreadyDownloadedCount = 0;
+        let needDownloadCount = 0;
+        
+        // Use a special output folder for liked videos (can be customized)
+        const likedVideosOutputFolder = req.body.outputFolder || path.join(DOWNLOADS_DIR, 'Liked Videos');
+        
+        // Check regular videos
+        likedData.videos.forEach(function(video) {
+            const existingFile = checkIfAlreadyDownloaded(video.id, video.title, channelId, DOWNLOADS_DIR);
+            if (existingFile.exists) {
+                video.alreadyDownloaded = true;
+                video.existingFile = existingFile.fileName;
+                video.existingFilePath = existingFile.filePath;
+                video.fileInfo = getFileInfo(existingFile.filePath);
+                video.matchType = existingFile.matchType;
+                alreadyDownloadedCount++;
+                console.log(`   ✅ Already downloaded: ${video.title}`);
+            } else {
+                video.alreadyDownloaded = false;
+                needDownloadCount++;
+            }
+        });
+        
+        // Check live videos
+        likedData.liveVideos.forEach(function(video) {
+            const existingFile = checkIfAlreadyDownloaded(video.id, video.title, channelId, DOWNLOADS_DIR);
+            if (existingFile.exists) {
+                video.alreadyDownloaded = true;
+                video.existingFile = existingFile.fileName;
+                video.existingFilePath = existingFile.filePath;
+                video.fileInfo = getFileInfo(existingFile.filePath);
+                video.matchType = existingFile.matchType;
+                alreadyDownloadedCount++;
+                console.log(`   ✅ Already downloaded (live): ${video.title}`);
+            } else {
+                video.alreadyDownloaded = false;
+                needDownloadCount++;
+            }
+        });
+        
+        // Add sync stats
+        likedData.syncStats = {
+            totalVideos: likedData.videos.length + likedData.liveVideos.length,
+            alreadyDownloaded: alreadyDownloadedCount,
+            needDownload: needDownloadCount,
+            skipPercent: ((alreadyDownloadedCount / (likedData.videos.length + likedData.liveVideos.length)) * 100).toFixed(1) + '%'
+        };
+        
+        console.log(`[Liked Videos Sync] Complete: ${alreadyDownloadedCount} already downloaded, ${needDownloadCount} need download`);
+        console.log(`[Liked Videos Sync] Skip rate: ${likedData.syncStats.skipPercent}`);
+        
+        // Step 5: Update or add to channels list (so it persists)
+        const existingIndex = appData.channels.findIndex(function(c) { return c.id === channelId; });
+        if (existingIndex >= 0) {
+            appData.channels[existingIndex] = likedData;
+        } else {
+            appData.channels.push(likedData);
+        }
+        
+        saveData(appData);
+        
+        res.json({
+            success: true,
+            message: `✅ Found ${likedData.videos.length} liked videos! ${alreadyDownloadedCount} already downloaded, ${needDownloadCount} new`,
+            channel: likedData,
+            syncStats: likedData.syncStats,
+            isAuthenticated: true,
+            authMethod: authMethodUsed,
+            emailUsed: userEmail || null
+        });
+        
+    } catch (error) {
+        console.error('[Liked Videos Error]:', error.message);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            needsEmail: !userEmail,  // Ask for email if not provided
+            suggestion: error.message.includes('logged in') 
+                ? 'Please enter your Gmail address below to manually log in.' 
+                : 'An unexpected error occurred. Please try again.'
+        });
+    }
+});
+
+// =============================================================================
+// FETCH LIKED VIDEOS WITH EMAIL AUTHENTICATION (Fallback Method)
+// =============================================================================
+
+function fetchLikedVideosWithEmail(email) {
+    return new Promise((resolve, reject) => {
+        console.log(`[Liked Videos Email] Fetching liked videos for: ${email}`);
+        
+        // Use ytlikes: format with email
+        let cmd;
+        if (email && email.includes('@')) {
+            // ytlikes: format requires just the email prefix or full email
+            cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies-from-browser edge --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "ytlikes:' + email + '"';
+        } else {
+            // Fallback: Try to get from YouTube feed/library with cookies
+            cmd = 'yt-dlp --cookies "' + AUTH_CONFIG.cookieFilePath + '" --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/feed/library"';
+        }
+        
+        exec(cmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.error('[Liked Videos Email] Error:', error.message);
+                
+                // If ytlikes format fails, try alternative approach
+                const altCmd = 'yt-dlp --username "' + email + '" --password "" --cookies-from-browser edge --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "https://www.youtube.com/playlist?list=LL"';
+                
+                exec(altCmd, { maxBuffer: 100 * 1024 * 1024, timeout: 180000 }, (error2, stdout2, stderr2) => {
+                    if (error2) {
+                        reject(new Error('Failed to fetch liked videos with email: ' + email + '. Error: ' + error2.message));
+                        return;
+                    }
+                    processLikedVideosOutput(stdout2, resolve, reject);
+                });
+                return;
+            }
+            
+            processLikedVideosOutput(stdout, resolve, reject);
+        });
+    });
+}
+
+// API Endpoint: Refresh liked videos only
+app.post('/api/my-liked-videos/refresh', async function(req, res) {
+    // Re-use the main endpoint logic
+    req.body = req.body || {};
+    await req.handler?.call(this, req, res) || res.redirect('/api/my-liked-videos');
+});
+
 // Refresh channel (check for new videos)
 app.post('/api/channels/:id/refresh', async function(req, res) {
     const channelId = req.params.id;

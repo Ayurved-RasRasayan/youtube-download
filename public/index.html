@@ -228,6 +228,161 @@
             color: white;
         }
 
+        /* My Liked Videos Button - Special Heart Theme */
+        .btn-liked-videos {
+            background: linear-gradient(135deg, #e91e63 0%, #c2185b 50%, #ad1457 100%);
+            color: white;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 4px 15px rgba(233, 30, 99, 0.4);
+            animation: heartbeat 2s ease-in-out infinite;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-liked-videos:hover {
+            background: linear-gradient(135deg, #f06292 0%, #e91e63 50%, #c2185b 100%);
+            transform: translateY(-2px) scale(1.02);
+            box-shadow: 0 6px 20px rgba(233, 30, 99, 0.6);
+        }
+
+        .btn-liked-videos:active {
+            transform: translateY(0) scale(0.98);
+        }
+
+        @keyframes heartbeat {
+            0%, 100% { box-shadow: 0 4px 15px rgba(233, 30, 99, 0.4); }
+            50% { box-shadow: 0 4px 25px rgba(233, 30, 99, 0.7); }
+        }
+
+        /* Liked Videos Channel Card - Special Styling */
+        .channel-card[data-liked="true"] {
+            border-left: 4px solid #e91e63;
+            background: linear-gradient(135deg, rgba(233, 30, 99, 0.08), rgba(255, 255, 255, 0.95));
+        }
+
+        .channel-card[data-liked="true"] .channel-name {
+            color: #c2185b;
+        }
+
+        /* Email Authentication Fallback Section */
+        .email-auth-section {
+            margin-top: 15px;
+            animation: slideDown 0.3s ease-out;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .email-auth-container {
+            background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+            border: 2px solid #ff9800;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 15px rgba(255, 152, 0, 0.2);
+        }
+
+        .email-auth-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .email-auth-icon {
+            font-size: 28px;
+        }
+
+        .email-auth-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #e65100;
+        }
+
+        .email-auth-subtitle {
+            width: 100%;
+            font-size: 13px;
+            color: #f57c00;
+            margin-top: -5px;
+        }
+
+        .email-input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .email-input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #ff9800;
+            border-radius: 8px;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+
+        .email-input:focus {
+            border-color: #f57c00;
+            box-shadow: 0 0 0 3px rgba(245, 124, 0, 0.1);
+        }
+
+        .email-input::placeholder {
+            color: #ffb74d;
+        }
+
+        .btn-email-submit {
+            background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .btn-email-submit:hover {
+            background: linear-gradient(135deg, #ffa726 0%, #ff9800 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(255, 152, 0, 0.4);
+        }
+
+        .btn-email-submit:active {
+            transform: translateY(0);
+        }
+
+        .email-auth-options {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .btn-text {
+            background: none;
+            border: none;
+            color: #e65100;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 6px 12px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-text:hover {
+            background: rgba(230, 81, 0, 0.1);
+            color: #bf360c;
+        }
+
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 30px rgba(255,0,0,0.4);
@@ -1090,9 +1245,37 @@ label:has(select[id*='quality' i]) {
                 <div class="input-wrapper">
                     <input type="text" id="channelInput" placeholder="Paste YouTube channel URL (e.g., https://www.youtube.com/@ChannelName)">
                 </div>
-                <button class="btn btn-primary" onclick="loadChannel()" id="loadBtn">Load Channel</button>
+                <button class="btn btn-primary" onclick="loadChannel()" id="loadBtn">📺 Load Channel</button>
+                <button class="btn btn-liked-videos" onclick="loadMyLikedVideos()" id="likedVideosBtn" title="Auto-fetch YOUR liked videos using browser login (no password needed!)">
+                    ⭐ My Liked Videos
+                </button>
                 <button class="btn btn-secondary" onclick="toggleSettings()">⚙️ Settings</button>
                 <button class="btn btn-secondary" onclick="toggleDownloads()">⬇️ Downloads</button>
+            </div>
+
+            <!-- Email Fallback Input (Hidden by default, shows when auto-auth fails) -->
+            <div class="email-auth-section" id="emailAuthSection" style="display: none;">
+                <div class="email-auth-container">
+                    <div class="email-auth-header">
+                        <span class="email-auth-icon">🔐</span>
+                        <span class="email-auth-title">Manual Login Required</span>
+                        <span class="email-auth-subtitle">Auto-authentication failed. Enter your Gmail to continue.</span>
+                    </div>
+                    <div class="email-input-group">
+                        <input type="email" 
+                               id="youtubeEmailInput" 
+                               placeholder="your.email@gmail.com" 
+                               class="email-input"
+                               onkeypress="if(event.key === 'Enter') loadMyLikedVideosWithEmail()">
+                        <button class="btn btn-email-submit" onclick="loadMyLikedVideosWithEmail()" id="emailSubmitBtn">
+                            🔑 Login & Fetch
+                        </button>
+                    </div>
+                    <div class="email-auth-options">
+                        <button class="btn-text" onclick="hideEmailAuth()">✕ Cancel</button>
+                        <button class="btn-text" onclick="retryAutoAuth()">🔄 Retry Auto-Auth</button>
+                    </div>
+                </div>
             </div>
 
             <div class="controls">
@@ -1536,6 +1719,201 @@ label:has(select[id*='quality' i]) {
                 showLoading(false);
                 document.getElementById('loadBtn').disabled = false;
             }
+        }
+
+        // Load My Liked Videos (auto-links via browser cookies - no login needed!)
+        async function loadMyLikedVideos() {
+            console.log('[My Liked Videos] Fetching your liked videos...');
+            
+            if (!isServerConnected) {
+                showNotification('Please start the server first', 'error');
+                return;
+            }
+            
+            showLoading(true, '❤️ Connecting to YouTube via browser cookies...\nThis may take 10-30 seconds...');
+            
+            // Hide email section if visible (in case of retry)
+            hideEmailAuth();
+            
+            // Show a more detailed notification
+            const btn = document.getElementById('likedVideosBtn');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '⏳ Connecting...';
+            btn.disabled = true;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/my-liked-videos`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})  // Empty body - auto-detects from cookies
+                });
+                
+                const data = await response.json();
+
+                // =====================================================================
+                // HANDLE: Auto-auth failed, needs email fallback
+                // =====================================================================
+                if (!response.ok && data.needsEmail) {
+                    console.log('[My Liked Videos] Auto-auth failed, showing email input...');
+                    
+                    showNotification('🔐 Auto-login failed. Please enter your Gmail below.', 'warning', 5000);
+                    
+                    // Show the email input section
+                    showEmailAuth();
+                    
+                    // Focus on email input
+                    setTimeout(() => {
+                        document.getElementById('youtubeEmailInput').focus();
+                    }, 300);
+                    
+                    return;  // Don't proceed further, wait for user input
+                }
+
+                if (!response.ok) {
+                    throw new Error(data.error || data.suggestion || 'Failed to fetch liked videos');
+                }
+
+                // Success!
+                showNotification(data.message, 'success');
+                
+                // Hide email section if it was shown
+                hideEmailAuth();
+                
+                // Refresh channels list to show the new "My Liked Videos" channel
+                await loadChannelsFromServer();
+                
+                // Scroll to the liked videos card
+                setTimeout(() => {
+                    const likedCard = document.querySelector('.channel-card[data-liked="true"]');
+                    if (likedCard) {
+                        likedCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        likedCard.style.animation = 'pulse 1s ease-in-out 3';
+                    }
+                }, 500);
+                
+            } catch (error) {
+                console.error('[My Liked Videos Error]:', error);
+                showNotification(error.message, 'error');
+                
+                // Show helpful suggestion
+                if (error.message.includes('logged in') || error.message.includes('browser')) {
+                    setTimeout(() => {
+                        showNotification('💡 Tip: Open YouTube in Edge browser and make sure you are logged in!', 'info', 6000);
+                    }, 1000);
+                }
+            } finally {
+                showLoading(false);
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        // Load My Liked Videos with Manual Email Authentication (Fallback)
+        async function loadMyLikedVideosWithEmail() {
+            console.log('[My Liked Videos Email] Fetching with manual email...');
+            
+            const emailInput = document.getElementById('youtubeEmailInput');
+            const email = emailInput.value.trim();
+            
+            // Validate email
+            if (!email) {
+                showNotification('Please enter your Gmail address', 'error');
+                emailInput.focus();
+                return;
+            }
+            
+            if (!email.includes('@') || !email.includes('.')) {
+                showNotification('Please enter a valid email address', 'error');
+                emailInput.focus();
+                return;
+            }
+            
+            if (!isServerConnected) {
+                showNotification('Please start the server first', 'error');
+                return;
+            }
+            
+            showLoading(true, `🔑 Authenticating with ${email}...\nThis may take 15-45 seconds...`);
+            
+            // Disable submit button during request
+            const submitBtn = document.getElementById('emailSubmitBtn');
+            const originalSubmitText = submitBtn.innerHTML;
+            submitBtn.innerHTML = '⏳ Authenticating...';
+            submitBtn.disabled = true;
+            
+            try {
+                const response = await fetch(`${API_BASE}/api/my-liked-videos`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        email: email,
+                        forceEmailAuth: true  // Force email auth method
+                    })
+                });
+                
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to authenticate with email');
+                }
+
+                // Success!
+                showNotification(`✅ Authenticated as ${email}! Found ${data.channel?.videos?.length || 0} liked videos.`, 'success');
+                
+                // Hide email section
+                hideEmailAuth();
+                
+                // Clear email field for privacy
+                emailInput.value = '';
+                
+                // Refresh channels list
+                await loadChannelsFromServer();
+                
+                // Scroll to liked videos card
+                setTimeout(() => {
+                    const likedCard = document.querySelector('.channel-card[data-liked="true"]');
+                    if (likedCard) {
+                        likedCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        likedCard.style.animation = 'pulse 1s ease-in-out 3';
+                    }
+                }, 500);
+                
+            } catch (error) {
+                console.error('[My Liked Videos Email Error]:', error);
+                showNotification(error.message, 'error');
+                
+                // Re-enable submit button so user can retry
+                submitBtn.innerHTML = originalSubmitText;
+                submitBtn.disabled = false;
+            } finally {
+                showLoading(false);
+                submitBtn.innerHTML = originalSubmitText;
+                submitBtn.disabled = false;
+            }
+        }
+
+        // Show email authentication section
+        function showEmailAuth() {
+            const section = document.getElementById('emailAuthSection');
+            section.style.display = 'block';
+            section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // Hide email authentication section
+        function hideEmailAuth() {
+            const section = document.getElementById('emailAuthSection');
+            section.style.display = 'none';
+        }
+
+        // Retry auto authentication (hide email section and try again)
+        async function retryAutoAuth() {
+            hideEmailAuth();
+            showNotification('🔄 Retrying auto-authentication...', 'info');
+            
+            // Small delay then try again
+            setTimeout(() => {
+                loadMyLikedVideos();
+            }, 500);
         }
 
         // Refresh channel
@@ -2023,9 +2401,13 @@ label:has(select[id*='quality' i]) {
             const totalVideos = (channel.videos?.length || 0) + (channel.liveVideos?.length || 0);
             const downloadedCount = [...(channel.videos || []), ...(channel.liveVideos || [])].filter(v => v.downloaded).length;
             const downloadableCount = totalVideos - downloadedCount;
+            
+            // Check if this is the special "My Liked Videos" channel
+            const isLikedVideos = channel.id === 'my-liked-videos' || channel.isLikedVideos;
+            const likedAttribute = isLikedVideos ? 'data-liked="true"' : '';
 
             return `
-                <div class="channel-card">
+                <div class="channel-card" ${likedAttribute}>
                     <div class="channel-header">
                         <div class="channel-info">
                             <div class="channel-avatar">${channel.avatar}</div>
@@ -2062,7 +2444,13 @@ label:has(select[id*='quality' i]) {
                             </button>
                             <button class="btn btn-secondary" onclick="expandAllInCard(this)" title="Expand all folders">📂 Expand All</button>
                             <button class="btn btn-secondary" onclick="collapseAllInCard(this)" title="Collapse all folders">📁 Collapse All</button>
+                            ${isLikedVideos ? `
+                            <button class="btn btn-liked-videos" onclick="loadMyLikedVideos()" title="Refresh your liked videos from YouTube">
+                                ❤️ Refresh Likes
+                            </button>
+                            ` : `
                             <button class="btn btn-secondary" onclick="refreshChannel('${channel.id}')">🔄</button>
+                            `}
                             <button class="btn btn-secondary" onclick="removeChannel('${channel.id}')">✕</button>
                         </div>
                         
