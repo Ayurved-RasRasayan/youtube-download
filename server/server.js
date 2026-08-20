@@ -90,6 +90,257 @@ function checkCookieFile() {
     }
 }
 
+// =============================================================================
+// AUTOMATIC COOKIES.TXT GENERATION SYSTEM
+// =============================================================================
+
+// Auto-generate cookies.txt using multiple methods
+async function autoGenerateCookies(options = {}) {
+    const { forceRegenerate = false, silent = false } = options;
+    
+    if (!silent) console.log('\n🍪 [Auto-Cookie] Starting automatic cookie generation...');
+    
+    // Skip if file exists and we're not forcing regeneration
+    if (!forceRegenerate && checkCookieFile()) {
+        if (!silent) console.log('✅ [Auto-Cookie] cookies.txt already exists and is valid');
+        return { success: true, method: 'existing', message: 'Cookie file already exists' };
+    }
+    
+    const results = [];
+    
+    // METHOD 1: Try yt-dlp's built-in cookie extraction from browsers
+    results.push(await tryYtdlpCookieExtraction(silent));
+    
+    // METHOD 2: Try to extract from browser profile directly (Chrome/Edge)
+    results.push(await tryDirectBrowserCookieExtraction(silent));
+    
+    // METHOD 3: Generate minimal cookie file with consent/visitor info
+    results.push(await generateMinimalCookieFile(silent));
+    
+    // Find first successful method
+    const successResult = results.find(r => r.success);
+    
+    if (successResult) {
+        if (!silent) console.log(`✅ [Auto-Cookie] SUCCESS using method: ${successResult.method}`);
+        return successResult;
+    }
+    
+    if (!silent) console.log('❌ [Auto-Cookie] All automatic methods failed');
+    return { success: false, method: 'none', message: 'All automatic methods failed' };
+}
+
+// METHOD 1: Use yt-dlp to extract cookies to file
+async function tryYtdlpCookieExtraction(silent) {
+    if (!silent) console.log('   📋 Method 1: yt-dlp cookie extraction...');
+    
+    const browsers = ['chrome', 'edge', 'firefox', 'brave', 'opera'];
+    
+    for (const browser of browsers) {
+        try {
+            // Use yt-dlp to extract cookies from browser to our file
+            const cmd = `yt-dlp --cookies-from-browser ${browser} --cookies "${AUTH_CONFIG.cookieFilePath}" --skip-download --quiet "https://www.youtube.com/watch?v=dQw4w9WgXcQ" 2>&1`;
+            
+            await new Promise((resolve, reject) => {
+                exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
+                    if (error) {
+                        reject(error);
+                    } else {
+                        resolve({ stdout, stderr });
+                    }
+                });
+            });
+            
+            // Check if file was created and has content
+            if (checkCookieFile()) {
+                if (!silent) console.log(`      ✅ Extracted cookies from ${browser}`);
+                return { success: true, method: `ytdlp-${browser}`, message: `Extracted from ${browser}` };
+            }
+        } catch (err) {
+            if (!silent) console.log(`      ⚠️ ${browser}: ${err.message.slice(0, 50)}...`);
+        }
+    }
+    
+    return { success: false, method: 'ytdlp', message: 'No browser had extractable cookies' };
+}
+
+// METHOD 2: Direct extraction from browser SQLite databases
+async function tryDirectBrowserCookieExtraction(silent) {
+    if (!silent) console.log('   📋 Method 2: Direct browser database extraction...');
+    
+    // Common browser cookie database paths by OS
+    const platform = process.platform;
+    const homeDir = os.homedir();
+    let browserPaths = [];
+    
+    if (platform === 'win32') {
+        browserPaths = [
+            path.join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'User Data', 'Default', 'Network', 'Cookies'),
+            path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'Edge', 'User Data', 'Default', 'Network', 'Cookies'),
+        ];
+    } else if (platform === 'darwin') {
+        browserPaths = [
+            path.join(homeDir, 'Library', 'Application Support', 'Google', 'Chrome', 'Default', 'Network', 'Cookies'),
+            path.join(homeDir, 'Library', 'Application Support', 'Microsoft Edge', 'Default', 'Network', 'Cookies'),
+        ];
+    } else {
+        // Linux
+        browserPaths = [
+            path.join(homeDir, '.config', 'google-chrome', 'Default', 'Network', 'Cookies'),
+            path.join(homeDir, '.config', 'microsoft-edge', 'Default', 'Network', 'Cookies'),
+        ];
+    }
+    
+    for (const dbPath of browserPaths) {
+        if (fs.existsSync(dbPath)) {
+            try {
+                // Try to read SQLite database (requires sqlite3 or copying)
+                if (!silent) console.log(`      Found: ${dbPath}`);
+                
+                // Create a temporary Python script for extraction
+                const pythonScript = `
+import sqlite3, os, sys, shutil
+
+db_path = r'''${dbPath}'''
+output_path = r'''${AUTH_CONFIG.cookieFilePath}'''
+
+# Copy database to avoid lock issues
+temp_db = output_path + '.temp.db'
+shutil.copy2(db_path, temp_db)
+
+try:
+    conn = sqlite3.connect(temp_db)
+    cursor = conn.cursor()
+    
+    # YouTube domains to extract
+    cursor.execute("""
+        SELECT host_key, name, value, path, expires_utc, is_secure, is_httponly 
+        FROM cookies 
+        WHERE host_key LIKE '%.youtube.com' 
+           OR host_key LIKE 'youtube.com'
+           OR host_key LIKE '%.google.com'
+           OR host_key LIKE 'google.com'
+    """)
+    
+    rows = cursor.fetchall()
+    
+    if len(rows) == 0:
+        print('NO_COOKIES')
+        sys.exit(0)
+    
+    # Write Netscape format
+    with open(output_path, 'w') as f:
+        f.write('# Netscape HTTP Cookie File\\n')
+        for row in rows:
+            host_key, name, value, path, expires, secure, httponly = row
+            expires_unix = int(expires / 1000000 - 11644473600) if expires > 0 else 0
+            secure_flag = 'TRUE' if secure else 'FALSE'
+            f.write('%s\\tTRUE\\t%s\\t%s\\t%d\\t%s\\t%s\\n' % (
+                host_key, path, secure_flag, expires_unix, name, value
+            ))
+    
+    print('EXTRACTED_%d_COOKIES' % len(rows))
+finally:
+    conn.close()
+    os.remove(temp_db)
+`;
+                
+                // Write script to temp file and execute
+                const scriptPath = AUTH_CONFIG.cookieFilePath + '_extract.py';
+                fs.writeFileSync(scriptPath, pythonScript);
+                
+                const result = await new Promise((resolve) => {
+                    exec(`python3 "${scriptPath}" 2>&1`, { timeout: 15000 }, (error, stdout, stderr) => {
+                        resolve({ stdout: stdout.trim(), stderr: stderr.trim(), error });
+                    });
+                });
+                
+                // Clean up temp script
+                try { fs.unlinkSync(scriptPath); } catch(e) {}
+                
+                if (result.stdout.includes('EXTRACTED')) {
+                    const count = result.stdout.match(/EXTRACTED_(\d+)_COOKIES/)?.[1];
+                    if (!silent) console.log(`      ✅ Extracted ${count} cookies`);
+                    return { success: true, method: 'direct-sqlite', message: `Extracted ${count} cookies` };
+                }
+            } catch (err) {
+                if (!silent) console.log(`      ⚠️ Direct extraction failed: ${err.message.slice(0, 50)}`);
+            }
+        }
+    }
+    
+    return { success: false, method: 'direct', message: 'No browser databases found' };
+}
+
+// METHOD 3: Generate minimal consent/visitor cookie file
+async function generateMinimalCookieFile(silent) {
+    if (!silent) console.log('   📋 Method 3: Generating minimal visitor cookies...');
+    
+    try {
+        // Generate current timestamp + 1 year for expiry
+        const now = Math.floor(Date.now() / 1000);
+        const oneYear = now + 365 * 24 * 60 * 60;
+        
+        // Minimal YouTube consent/visitor cookies
+        // These help bypass some bot detection but won't give logged-in features
+        const cookieContent = `# Netscape HTTP Cookie File
+# Auto-generated by YouTube Downloader
+# Generated: ${new Date().toISOString()}
+# These are basic visitor cookies to reduce 403 errors
+
+.youtube.com    TRUE    /       TRUE    ${oneYear}      SOCS    CAESFwgDEghibWRfaWQiEiNjb21tZW50cy10b29sLXVzZS1hbmQtcmF0aW5nLXRvb2w
+.youtube.com    TRUE    /       TRUE    ${oneYear}      PREF    f1=50000000&f6=40000000&hl=en
+.youtube.com    TRUE    /       TRUE    ${oneYear}      VISITOR_INFO1_LIVE      aBz2HwzT2wY
+.youtube.com    TRUE    /       FALSE   ${oneYear}      YSC     test12345678
+.youtube.com    TRUE    /       TRUE    ${oneYear}      STATE_ID        1
+.youtube.com    TRUE    /       TRUE    ${oneYear}      CONSENT YES+
+.google.com     TRUE    /       TRUE    ${oneYear}      NID     511=autogenerated_visitor`;
+
+        fs.writeFileSync(AUTH_CONFIG.cookieFilePath, cookieContent, 'utf8');
+        
+        if (!silent) console.log('      ✅ Generated minimal cookie file');
+        return { success: true, method: 'minimal', message: 'Generated minimal visitor cookies' };
+    } catch (err) {
+        return { success: false, method: 'minimal', message: err.message };
+    }
+}
+
+// API Endpoint: Trigger auto-generation
+app.get('/api/auth/auto-generate-cookies', async function(req, res) {
+    console.log('\n[API] Auto-generate cookies requested');
+    
+    try {
+        const result = await autoGenerateCookies({ forceRegenerate: true });
+        
+        res.json({
+            success: result.success,
+            method: result.method,
+            message: result.message,
+            cookieFilePath: AUTH_CONFIG.cookieFilePath,
+            cookieFileExists: checkCookieFile(),
+            timestamp: new Date().toISOString()
+        });
+    } catch (err) {
+        console.error('[Auto-Cookie] Error:', err.message);
+        res.status(500).json({
+            success: false,
+            error: err.message
+        });
+    }
+});
+
+// Auto-generate on server startup (if no cookie file exists)
+let cookieGenerationPromise = null;
+function initAutoCookieGeneration() {
+    cookieGenerationPromise = autoGenerateCookies({ silent: true }).then(result => {
+        if (result.success) {
+            console.log(`🍪 [Startup] Cookie file ready: ${result.method}`);
+        } else {
+            console.log('⚠️ [Startup] Could not auto-generate cookies.txt (manual creation needed)');
+        }
+        return result;
+    });
+}
+
 // Generate instructions for creating cookie file
 function getCookieFileInstructions() {
     return `
@@ -1939,6 +2190,9 @@ app.listen(PORT, function() {
     console.log('║  Channels tracked: ' + appData.channels.length + '                   ║');
     console.log('╚══════════════════════════════════════════╝');
     console.log('');
+    
+    // Auto-generate cookies.txt on startup if needed
+    initAutoCookieGeneration();
     
     if (!checkYtDlp()) {
         console.log('');
