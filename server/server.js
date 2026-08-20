@@ -719,6 +719,196 @@ downloadQueue = [];
 let isProcessingQueue = false;
 
 // =============================================================================
+// SKIP ALREADY DOWNLOADED FILES SYSTEM
+// =============================================================================
+
+// Check if a video file already exists in the output folder
+function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
+    const effectiveDownloadsDir = outputFolder || DOWNLOADS_DIR;
+    const safeTitle = sanitizeFilename(title.replace(/[^a-z0-9]/gi, '_').substring(0, 100));
+    const channelFolder = sanitizeFilename(channelId || 'general');
+    
+    // Possible locations: Videos folder or Live Streams folder
+    const possiblePaths = [
+        path.join(effectiveDownloadsDir, channelFolder, 'Videos'),
+        path.join(effectiveDownloadsDir, channelFolder, 'Live Streams'),
+        effectiveDownloadsDir, // Also check root downloads dir
+        path.join(effectiveDownloadsDir, channelFolder) // Check channel root
+    ];
+    
+    // Common video file extensions to check
+    const videoExtensions = ['.mp4', '.webm', '.mkv', '.avi', '.flv', '.m4a', '.mp3'];
+    
+    for (const dirPath of possiblePaths) {
+        try {
+            if (!fs.existsSync(dirPath)) continue;
+            
+            const files = fs.readdirSync(dirPath);
+            
+            for (const file of files) {
+                const fileName = path.basename(file, path.extname(file));
+                const ext = path.extname(file).toLowerCase();
+                
+                // Check 1: Exact title match (with sanitized filename)
+                if (fileName === safeTitle && videoExtensions.includes(ext)) {
+                    return {
+                        exists: true,
+                        filePath: path.join(dirPath, file),
+                        fileName: file,
+                        matchType: 'exact-title'
+                    };
+                }
+                
+                // Check 2: Video ID in filename (yt-dlp sometimes adds it)
+                if (fileName.includes(videoId) && videoExtensions.includes(ext)) {
+                    return {
+                        exists: true,
+                        filePath: path.join(dirPath, file),
+                        fileName: file,
+                        matchType: 'video-id'
+                    };
+                }
+                
+                // Check 3: Partial title match (handles slight variations)
+                const safeTitleShort = safeTitle.substring(0, 30);
+                if (fileName.includes(safeTitleShort) && videoExtensions.includes(ext)) {
+                    return {
+                        exists: true,
+                        filePath: path.join(dirPath, file),
+                        fileName: file,
+                        matchType: 'partial-title'
+                    };
+                }
+            }
+        } catch (err) {
+            console.error(`[Skip-Check] Error checking ${dirPath}:`, err.message);
+        }
+    }
+    
+    return { exists: false, filePath: null, fileName: null, matchType: null };
+}
+
+// Get file info (size, modification date) for already downloaded files
+function getFileInfo(filePath) {
+    try {
+        const stats = fs.statSync(filePath);
+        return {
+            size: stats.size,
+            sizeFormatted: formatFileSize(stats.size),
+            modifiedAt: stats.mtime.toISOString(),
+            modifiedAgo: getTimeAgo(stats.mtime)
+        };
+    } catch (err) {
+        return { size: 0, sizeFormatted: 'Unknown', modifiedAt: null, modifiedAgo: 'Unknown' };
+    }
+}
+
+// Format file size in human-readable format
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
+// Get relative time string (e.g., "2 hours ago")
+function getTimeAgo(date) {
+    const seconds = Math.floor((new Date() - date) / 1000);
+    const intervals = [
+        { label: 'year', seconds: 31536000 },
+        { label: 'month', seconds: 2592000 },
+        { label: 'week', seconds: 604800 },
+        { label: 'day', seconds: 86400 },
+        { label: 'hour', seconds: 3600 },
+        { label: 'minute', seconds: 60 }
+    ];
+    
+    for (const interval of intervals) {
+        const count = Math.floor(seconds / interval.seconds);
+        if (count >= 1) {
+            return `${count} ${interval.label}${count > 1 ? 's' : ''} ago`;
+        }
+    }
+    return 'just now';
+}
+
+// API Endpoint: Check if specific video is already downloaded
+app.get('/api/check-downloaded/:videoId', function(req, res) {
+    const videoId = req.params.videoId;
+    const title = req.query.title || videoId;
+    const channelId = req.query.channelId || '';
+    const outputFolder = req.query.outputFolder || null;
+    
+    const result = checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder);
+    
+    if (result.exists) {
+        const fileInfo = getFileInfo(result.filePath);
+        res.json({
+            exists: true,
+            ...result,
+            fileInfo: fileInfo,
+            message: `File already exists: ${result.fileName}`,
+            action: 'skip'
+        });
+    } else {
+        res.json({
+            exists: false,
+            message: 'File not found - ready to download',
+            action: 'download'
+        });
+    }
+});
+
+// API Endpoint: Batch check multiple videos and return which ones are already downloaded
+app.post('/api/batch-check-downloaded', function(req, res) {
+    const videos = req.body.videos; // Array of { videoId, title, channelId }
+    const outputFolder = req.body.outputFolder || null;
+    
+    if (!videos || !Array.isArray(videos)) {
+        return res.status(400).json({ error: 'videos array is required' });
+    }
+    
+    const results = {
+        total: videos.length,
+        alreadyDownloaded: [],
+        needDownload: [],
+        summary: {}
+    };
+    
+    videos.forEach(function(video) {
+        const checkResult = checkIfAlreadyDownloaded(
+            video.videoId, 
+            video.title || video.videoId, 
+            video.channelId || '', 
+            outputFolder
+        );
+        
+        if (checkResult.exists) {
+            results.alreadyDownloaded.push({
+                ...video,
+                ...checkResult,
+                fileInfo: getFileInfo(checkResult.filePath)
+            });
+        } else {
+            results.needDownload.push({
+                ...video,
+                ...checkResult
+            });
+        }
+    });
+    
+    results.summary = {
+        total: videos.length,
+        alreadyDownloaded: results.alreadyDownloaded.length,
+        needDownload: results.needDownload.length,
+        skippedPercent: ((results.alreadyDownloaded.length / videos.length) * 100).toFixed(1) + '%'
+    };
+    
+    res.json(results);
+});
+
+// =============================================================================
 // AUTO-COOKIE GENERATION API ENDPOINT (must be AFTER app is initialized)
 // =============================================================================
 
@@ -1539,6 +1729,66 @@ async function executeDownload(reqBody, res, jobId) {
     }
 
     const outputTemplate = path.join(finalPath, safeTitle + '.%(ext)s');
+    
+    // =========================================================================
+    // SKIP CHECK: Check if file already exists BEFORE starting download
+    // =========================================================================
+    console.log(`[Skip-Check] Checking if "${title}" is already downloaded...`);
+    const existingFile = checkIfAlreadyDownloaded(videoId, title, channelId, effectiveDownloadsDir);
+    
+    if (existingFile.exists) {
+        const fileInfo = getFileInfo(existingFile.filePath);
+        console.log(`[Skip-Check] ✅ File ALREADY EXISTS: ${existingFile.fileName}`);
+        console.log(`[Skip-Check] 📁 Path: ${existingFile.filePath}`);
+        console.log(`[Skip-Check] 📊 Size: ${fileInfo.sizeFormatted}, Modified: ${fileInfo.modifiedAgo}`);
+        
+        // Mark as "already_downloaded" and return success (skip download)
+        const skippedJob = {
+            id: jobId,
+            videoId: videoId,
+            title: title,
+            status: 'already_downloaded', // Special status for skipped files
+            progress: 100,
+            speed: 'Skipped',
+            eta: '',
+            startedAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            mode: currentDownloadMode,
+            outputPath: existingFile.filePath,
+            skipReason: `File already exists: ${existingFile.fileName}`,
+            fileInfo: fileInfo,
+            matchType: existingFile.matchType
+        };
+        
+        activeDownloads.set(jobId, skippedJob);
+        
+        // Log to console with visual indicator
+        console.log('\n' + '='.repeat(60));
+        console.log('⏭️  SKIPPED - File Already Downloaded');
+        console.log('='.repeat(60));
+        console.log(`   Title: ${title}`);
+        console.log(`   File: ${existingFile.fileName}`);
+        console.log(`   Size: ${fileInfo.sizeFormatted}`);
+        console.log(`   Location: ${existingFile.filePath}`);
+        console.log('='.repeat(60) + '\n');
+        
+        // Return success response (file already exists)
+        if (res && !res.headersSent) {
+            res.json({ 
+                success: true, 
+                jobId: jobId,
+                skipped: true,
+                message: 'File already downloaded - skipped',
+                file: existingFile.fileName,
+                path: existingFile.filePath,
+                fileInfo: fileInfo
+            });
+        }
+        
+        return; // EXIT - Don't proceed with download
+    }
+    
+    console.log(`[Skip-Check] ❌ File not found - proceeding with download...`);
     
     // Update job status to "analyzing" while we check formats
     const analyzingJob = {
