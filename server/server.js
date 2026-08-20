@@ -1832,24 +1832,67 @@ async function processBatchDownloads(downloadIds, format) {
 
 // In-memory storage for channels and settings (for demo/compatibility)
 const savedChannels = new Map();
-const appSettings = {
-    downloadPath: DOWNLOADS_DIR,
-    concurrentDownloads: 3,
-    autoCheckInterval: 5,
-    quality: 'best',
-    format: 'mp4',
-    cookiesEnabled: true,
-    cookieMode: isCookiesFileValid() ? 'file' : 'browser'
-};
+
+// Update existing appSettings with additional frontend-compatible fields
+appSettings.downloadPath = DOWNLOADS_DIR;
+appSettings.concurrentDownloads = 3;
+appSettings.autoCheckInterval = 5;
+appSettings.cookiesEnabled = true;
+appSettings.cookieMode = isCookiesFileValid() ? 'file' : 'browser';
 
 // GET /api/settings - Return application settings
 app.get('/api/settings', (req, res) => {
-    console.log('\n[Settings] GET /api/settings requested');
-    console.log('[Settings] Returning current settings');
+    // Silent - no logging (can be called frequently)
+    
+    // Get download folder details
+    let dirExists = false;
+    let fileCount = 0;
+    let recentFiles = [];
+    let totalSizeMB = 0;
+    
+    try {
+        dirExists = fs.existsSync(DOWNLOADS_DIR);
+        
+        if (dirExists) {
+            const files = fs.readdirSync(DOWNLOADS_DIR)
+                .filter(f => !f.startsWith('.') && f.match(/\.(mp4|webm|mkv|avi|mov|flv|mp3|m4a)$/i));
+            
+            fileCount = files.length;
+            
+            // Get recent files (last 5 by modification time)
+            recentFiles = files.map(filename => {
+                const filePath = path.join(DOWNLOADS_DIR, filename);
+                const stats = fs.statSync(filePath);
+                return {
+                    name: filename,
+                    size: stats.size,
+                    sizeMB: (stats.size / 1024 / 1024).toFixed(2),
+                    modified: stats.mtime.toISOString()
+                };
+            })
+            .sort((a, b) => new Date(b.modified) - new Date(a.modified))
+            .slice(0, 5);
+            
+            // Calculate total size
+            totalSizeMB = recentFiles.reduce((sum, f) => sum + parseFloat(f.sizeMB), 0);
+        }
+    } catch (e) {
+        // Ignore errors
+    }
     
     res.json({
         success: true,
-        data: appSettings,
+        data: {
+            ...appSettings,
+            currentDownloadsDir: DOWNLOADS_DIR,
+            resolvedPath: path.resolve(DOWNLOADS_DIR),
+            dirExists: dirExists,
+            fileCount: fileCount,
+            totalSizeMB: totalSizeMB.toFixed(2),
+            recentFiles: recentFiles,
+            defaultDir: getDefaultDownloadsDir(),
+            isCustomDir: DOWNLOADS_DIR !== getDefaultDownloadsDir()
+        },
         cookieInfo: {
             mode: isCookiesFileValid() ? 'cookies.txt' : 'browser (' + AUTH_CONFIG.browserName + ')',
             path: AUTH_CONFIG.cookieFilePath,
