@@ -634,6 +634,7 @@ app.delete('/api/channels', function(req, res) {
 function analyzeFormats(videoId) {
     return new Promise((resolve) => {
         const videoUrl = 'https://www.youtube.com/watch?v=' + videoId;
+        const analysisStart = Date.now();
         
         // Dynamic auth for format analysis too!
         const authFlags = checkCookieFile() 
@@ -643,23 +644,59 @@ function analyzeFormats(videoId) {
         // Command to list all available formats
         const cmd = 'yt-dlp --js-runtimes node ' + authFlags + ' --user-agent "' + getRandomUserAgent() + '" --list-formats "' + videoUrl + '" 2>&1';
         
-        console.log('[FormatAnalyzer] 📊 Scanning formats for:', videoId);
+        console.log('\n' + '═'.repeat(70));
+        console.log('[FormatAnalyzer] 📊 STARTING FORMAT ANALYSIS');
+        console.log('[FormatAnalyzer] Video ID:', videoId);
+        console.log('[FormatAnalyzer] Video URL:', videoUrl);
+        console.log('[FormatAnalyzer] Auth method:', checkCookieFile() ? 'cookies.txt' : 'player_client=web');
+        console.log('─'.repeat(70));
         
         const { exec } = require('child_process');
         
         exec(cmd, { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+            const elapsed = ((Date.now() - analysisStart) / 1000).toFixed(1);
+            
             if (error) {
-                console.log('[FormatAnalyzer] ⚠️ Analysis failed, using fallback -', error.message.slice(0, 100));
+                console.log('[FormatAnalyzer] ⚠️ Analysis FAILED after', elapsed, 'seconds');
+                console.log('[FormatAnalyzer] Error code:', error.code);
+                console.log('[FormatAnalyzer] Error message:', error.message.substring(0, 200));
+                if (stderr) {
+                    console.log('[FormatAnalyzer] STDERR (first 500 chars):', stderr.substring(0, 500));
+                }
+                console.log('═'.repeat(70) + '\n');
                 return resolve(getFallbackLowFormat());
             }
             
             try {
                 const output = stdout || stderr;
+                console.log('[FormatAnalyzer] ✅ Analysis completed in', elapsed, 'seconds');
+                console.log('[FormatAnalyzer] Output length:', output.length, 'chars');
+                
+                // Log first few lines of output for debugging
+                const sampleLines = output.split('\n').slice(0, 15);
+                console.log('[FormatAnalyzer] Sample output:');
+                sampleLines.forEach((line, i) => {
+                    console.log(`  [${i}]`, line.trim().substring(0, 120));
+                });
+                
                 const selectedFormat = parseFormatsAndSelectLowest(output, videoId);
-                console.log('[FormatAnalyzer] ✅ Selected:', selectedFormat.resolution, '(' + selectedFormat.formatId + ')');
+                
+                console.log('─'.repeat(70));
+                console.log('[FormatAnalyzer] 🎯 FORMAT SELECTED:');
+                console.log('[FormatAnalyzer]   Format ID:', selectedFormat.formatId);
+                console.log('[FormatAnalyzer]   Resolution:', selectedFormat.resolution);
+                console.log('[FormatAnalyzer]   Extension:', selectedFormat.ext);
+                console.log('[FormatAnalyzer]   File Size (est.):', selectedFormat.fileSize);
+                console.log('[FormatAnalyzer]   Needs Merge:', selectedFormat.needsMerge);
+                console.log('[FormatAnalyzer]   Note:', selectedFormat.note);
+                console.log('═'.repeat(70) + '\n');
+                
                 resolve(selectedFormat);
             } catch (parseError) {
-                console.error('[FormatAnalyzer] ❌ Parse error:', parseError.message);
+                console.error('[FormatAnalyzer] ❌ PARSE ERROR after', elapsed, 'seconds');
+                console.error('[FormatAnalyzer] Parse error:', parseError.message);
+                console.error('[FormatAnalyzer] Stack:', parseError.stack ? parseError.stack.substring(0, 200) : 'N/A');
+                console.log('═'.repeat(70) + '\n');
                 resolve(getFallbackLowFormat());
             }
         });
@@ -831,40 +868,80 @@ function estimateFileSize(height) {
 
 function executeSingleDownload(command, jobId, videoId, title, channelId, finalPath) {
     return new Promise((resolve) => {
-        console.log('[Download] Starting:', title);
+        const startTime = Date.now();
+        console.log('\n' + '═'.repeat(70));
+        console.log('[DEBUG] 🎬 DOWNLOAD STARTED');
+        console.log('[DEBUG] Title:', title);
+        console.log('[DEBUG] Video ID:', videoId);
+        console.log('[DEBUG] Job ID:', jobId.substring(0, 8) + '...');
+        console.log('[DEBUG] Final Path:', finalPath);
+        console.log('─'.repeat(70));
         
-        // Log the actual command for debugging
-        console.log('[Download] Command:', command.substring(0, 150) + '...');
+        // Log the FULL command for debugging (no truncation!)
+        console.log('[DEBUG] 🔧 FULL COMMAND:');
+        console.log(command);
+        console.log('─'.repeat(70));
         
         const childProcess = spawn(command, [], { shell: true });
         childProcessMap.set(jobId, childProcess);
         
-        // Capture full error output for debugging
+        console.log('[DEBUG] ✅ Process spawned - PID:', childProcess.pid);
+        
+        // Capture full output for debugging
         let errorOutput = '';
         let stdoutOutput = '';
+        let lastProgressUpdate = '';
         
         childProcess.stdout.on('data', (data) => {
             const output = data.toString();
             stdoutOutput += output;
             
+            // DEBUG: Log every stdout line (yt-dlp progress)
+            const lines = output.split('\n').filter(l => l.trim());
+            lines.forEach(line => {
+                if (line.includes('%') || line.includes('Downloading') || 
+                    line.includes('Merging') || line.includes('Already') ||
+                    line.includes('WARNING') || line.includes('ERROR')) {
+                    console.log('[STDOUT]', line.trim().substring(0, 150));
+                }
+            });
+            
             const percentMatch = output.match(/(\d+\.?\d*)%/);
             const speedMatch = output.match(/(\d+\.?\d*\s*(?:KB|MB|GB)\/s)/);
             const etaMatch = output.match(/ETA\s+(\d+:\d+)/);
             
             if (percentMatch && activeDownloads.has(jobId)) {
                 const download = activeDownloads.get(jobId);
-                download.progress = {
+                const progressInfo = {
                     percent: parseFloat(percentMatch[1]),
                     speed: speedMatch ? speedMatch[1] : '0 KB/s',
                     eta: etaMatch ? etaMatch[1] : 'Unknown'
                 };
+                download.progress = progressInfo;
                 download.status = 'downloading';
+                
+                // Log progress updates every time we get new data
+                const progressStr = `${progressInfo.percent}% | ${progressInfo.speed} | ETA: ${progressInfo.eta}`;
+                if (lastProgressUpdate !== progressStr) {
+                    lastProgressUpdate = progressStr;
+                    console.log('[PROGRESS]', progressStr);
+                }
             }
         });
         
         childProcess.stderr.on('data', (data) => {
             const output = data.toString();
-            errorOutput += output;  // Capture for error reporting
+            errorOutput += output;
+            
+            // DEBUG: Log EVERY stderr line (this is where yt-dlp outputs!)
+            const lines = output.split('\n').filter(l => l.trim());
+            lines.forEach(line => {
+                const trimmedLine = line.trim();
+                // Always log important messages
+                if (trimmedLine && !trimmedLine.startsWith('[debug]')) {
+                    console.log('[STDERR]', trimmedLine.substring(0, 200));
+                }
+            });
             
             const percentMatch = output.match(/(\d+\.?\d*)%/);
             const speedMatch = output.match(/(\d+\.?\d*\s*(?:KB|MB|GB)\/s)/);
@@ -880,27 +957,95 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
             }
         });
         
+        childProcess.on('error', (err) => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            console.log('\n' + '═'.repeat(70));
+            console.log('[DEBUG] ❌ PROCESS ERROR after', elapsed, 'seconds');
+            console.log('[DEBUG] Error:', err.message);
+            console.log('[DEBUG] Code:', err.code);
+            console.log('[DEBUG] Errno:', err.errno);
+            console.log('═'.repeat(70) + '\n');
+            
+            if (activeDownloads.has(jobId)) {
+                const download = activeDownloads.get(jobId);
+                download.status = 'error';
+                download.error = err.message;
+            }
+            
+            resolve({ success: false, error: err.message });
+        });
+        
         childProcess.on('close', (code) => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
             childProcessMap.delete(jobId);
             
+            console.log('\n' + '═'.repeat(70));
+            console.log('[DEBUG] 🏁 PROCESS CLOSED');
+            console.log('[DEBUG] Exit Code:', code);
+            console.log('[DEBUG] Duration:', elapsed, 'seconds');
+            console.log('[DEBUG] Total STDOUT length:', stdoutOutput.length, 'chars');
+            console.log('[DEBUG] Total STDERR length:', errorOutput.length, 'chars');
+            
             if (code === 0) {
-                console.log('[Download] ✅ Completed:', title);
+                console.log('[DEBUG] ✅ SUCCESS - Exit code 0');
+                
+                // Check if file exists
+                let fileSize = 'unknown';
+                try {
+                    if (fs.existsSync(finalPath)) {
+                        const stats = fs.statSync(finalPath);
+                        fileSize = (stats.size / 1024 / 1024).toFixed(2) + ' MB';
+                        console.log('[DEBUG] ✅ File exists at final path');
+                        console.log('[DEBUG] File size:', fileSize);
+                    } else {
+                        console.log('[DEBUG] ⚠️ File NOT found at final path:', finalPath);
+                        
+                        // Search for the file in video directory
+                        const videoDir = path.dirname(finalPath);
+                        if (fs.existsSync(videoDir)) {
+                            const files = fs.readdirSync(videoDir);
+                            const matchingFiles = files.filter(f => f.includes(title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50)));
+                            console.log('[DEBUG] Looking in directory:', videoDir);
+                            console.log('[DEBUG] Found files:', matchingFiles.length > 0 ? matchingFiles.join(', ') : 'none');
+                            
+                            if (matchingFiles.length > 0) {
+                                const altPath = path.join(videoDir, matchingFiles[0]);
+                                const stats = fs.statSync(altPath);
+                                fileSize = (stats.size / 1024 / 1024).toFixed(2) + ' MB';
+                                console.log('[DEBUG] File found at alternate path:', altPath);
+                                console.log('[DEBUG] File size:', fileSize);
+                            }
+                        }
+                    }
+                } catch (statErr) {
+                    console.log('[DEBUG] ⚠️ Could not check file:', statErr.message);
+                }
                 
                 if (activeDownloads.has(jobId)) {
                     const download = activeDownloads.get(jobId);
                     download.status = 'completed';
-                    download.progress = { percent: 100, speed: '0 KB/s', eta: 'Done' };
+                    download.progress = { percent: 100, speed: '0 KB/s', eta: 'Done (' + fileSize + ')' };
                     download.completedAt = new Date().toISOString();
                 }
                 
-                resolve({ success: true });
+                console.log('═'.repeat(70) + '\n');
+                resolve({ success: true, fileSize: fileSize });
             } else {
+                console.log('[DEBUG] ❌ FAILURE - Non-zero exit code');
+                
                 // Extract meaningful error from yt-dlp output
                 let errorMessage = `Exit code: ${code}`;
+                let errorDetails = [];
                 
                 if (errorOutput) {
                     // Find the actual error reason
                     const errorLines = errorOutput.split('\n').filter(l => l.trim());
+                    
+                    console.log('[DEBUG] Last 10 stderr lines:');
+                    const lastLines = errorLines.slice(-10);
+                    lastLines.forEach((line, i) => {
+                        console.log(`  [${i}]`, line.trim().substring(0, 150));
+                    });
                     
                     // Look for common yt-dlp errors
                     for (const line of errorLines) {
@@ -911,21 +1056,34 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                             line.includes('unavailable') ||
                             line.includes('copyright') ||
                             line.includes('private') ||
-                            line.includes('deleted')) {
+                            line.includes('deleted') ||
+                            line.includes('Fixed output name') ||
+                            line.includes('more than one file')) {
                             
-                            errorMessage = line.trim().substring(0, 200);  // Limit length
+                            errorMessage = line.trim().substring(0, 200);
                             break;
                         }
                     }
                     
                     // If no specific error found, use last few lines
                     if (errorMessage === `Exit code: ${code}`) {
-                        const lastLines = errorLines.slice(-3).join('; ');
-                        if (lastLines) {
-                            errorMessage = `${code}: ${lastLines.substring(0, 150)}`;
+                        const lastFewLines = errorLines.slice(-3).join('; ');
+                        if (lastFewLines) {
+                            errorMessage = `${code}: ${lastFewLines.substring(0, 150)}`;
                         }
                     }
+                    
+                    // Collect all ERROR lines for details
+                    errorDetails = errorLines.filter(l => 
+                        l.includes('ERROR:') || l.includes('Traceback')
+                    ).map(l => l.trim().substring(0, 200));
                 }
+                
+                console.log('[DEBUG] Error Message:', errorMessage);
+                if (errorDetails.length > 0) {
+                    console.log('[DEBUG] Error Details:', errorDetails.join(' | '));
+                }
+                console.log('═'.repeat(70) + '\n');
                 
                 console.error('[Download] ❌ Failed:', title);
                 console.error('[Download] Reason:', errorMessage);
@@ -1052,21 +1210,40 @@ app.post('/api/download', async function(req, res) {
             // ================================================================
             // STEP 2: BUILD DOWNLOAD COMMAND USING ANALYZED FORMAT
             // ================================================================
-            console.log('[Download] 📹 Step 2: Building command with format:', selectedFormat.formatId);
+            console.log('\n' + '─'.repeat(70));
+            console.log('[Download] 📹 Step 2: BUILDING COMMAND');
+            console.log('[Download] Format ID:', selectedFormat.formatId);
+            console.log('[Download] Resolution:', selectedFormat.resolution);
+            console.log('[Download] Needs Merge:', selectedFormat.needsMerge);
+            console.log('[Download] Output Extension:', formatExt);
+            console.log('[Download] Final Path:', finalPath);
             
             let command;
+            let commandType = '';
             
             if (format === 'mp3' || format === 'm4a') {
                 // Audio extraction - no merging needed
+                commandType = 'AUDIO EXTRACTION';
                 command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" -x --audio-format ${format} --audio-quality 0 --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+                console.log('[Download] Command Type:', commandType);
+                console.log('[Download] Audio Format:', format);
             } else if (selectedFormat.needsMerge) {
                 // Video needs merging - use temp pattern to avoid "Fixed output name" error
                 const tempPattern = path.join(videoDir, `${safeTitle}.f%(format_id)s.%(ext)s`);
+                commandType = 'MERGE REQUIRED';
                 command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${selectedFormat.formatString}" --merge-output-format ${formatExt} --no-check-certificate -o "${tempPattern}" "https://www.youtube.com/watch?v=${videoId}"`;
+                console.log('[Download] Command Type:', commandType);
+                console.log('[Download] Temp Pattern:', tempPattern);
+                console.log('[Download] Merge Format:', formatExt);
             } else {
                 // Combined format or no merge needed - direct output is safe!
+                commandType = 'DIRECT OUTPUT';
                 command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${selectedFormat.formatString}" --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+                console.log('[Download] Command Type:', commandType);
+                console.log('[Download] Direct output to final path');
             }
+            
+            console.log('─'.repeat(70) + '\n');
             
             // Update status to downloading
             if (activeDownloads.has(jobId)) {
@@ -1079,30 +1256,100 @@ app.post('/api/download', async function(req, res) {
             const result = await executeSingleDownload(command, jobId, videoId, title, channelId, finalPath);
             
             if (result.success) {
+                console.log('\n' + '═'.repeat(70));
+                console.log('[Post-Process] ✅ Download completed successfully!');
+                console.log('[Post-Process] Result file size:', result.fileSize || 'unknown');
+                
                 // If we used merging, rename temp file to final path
                 if (selectedFormat.needsMerge && fs.existsSync(videoDir)) {
+                    console.log('[Post-Process] 🔧 Merge was used - checking for temp files...');
                     try {
-                        const files = fs.readdirSync(videoDir).filter(f => 
+                        console.log('[Post-Process] Scanning directory:', videoDir);
+                        const allFiles = fs.readdirSync(videoDir);
+                        console.log('[Post-Process] All files in directory:', allFiles.length);
+                        
+                        const files = allFiles.filter(f => 
                             f.startsWith(safeTitle) && (f.endsWith('.mp4') || f.endsWith('.webm') || f.endsWith('.m4a'))
                         );
                         
+                        console.log('[Post-Process] Matching files found:', files.length);
+                        files.forEach((f, i) => {
+                            console.log(`  [${i}]`, f);
+                            const filePath = path.join(videoDir, f);
+                            try {
+                                const stats = fs.statSync(filePath);
+                                console.log(`      Size: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+                            } catch (e) {
+                                console.log(`      Size: unknown (${e.message})`);
+                            }
+                        });
+                        
                         if (files.length > 0) {
                             const downloadedFile = path.join(videoDir, files[0]);
-                            if (downloadedFile !== finalPath && !fs.existsSync(finalPath)) {
-                                fs.renameSync(downloadedFile, finalPath);
-                                console.log('[Download] ✅ Renamed to:', finalPath);
+                            console.log('[Post-Process] Selected file:', downloadedFile);
+                            console.log('[Post-Process] Target path:', finalPath);
+                            
+                            if (downloadedFile !== finalPath) {
+                                if (fs.existsSync(finalPath)) {
+                                    console.log('[Post-Process] ⚠️ Final path already exists, skipping rename');
+                                } else {
+                                    console.log('[Post-Process] Renaming...');
+                                    fs.renameSync(downloadedFile, finalPath);
+                                    console.log('[Post-Process] ✅ Rename successful!');
+                                    
+                                    // Verify rename worked
+                                    if (fs.existsSync(finalPath)) {
+                                        const stats = fs.statSync(finalPath);
+                                        console.log('[Post-Process] ✅ Verified file at final path');
+                                        console.log('[Post-Process] Final file size:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+                                    } else {
+                                        console.log('[Post-Process] ❌ File not found after rename!');
+                                    }
+                                }
+                            } else {
+                                console.log('[Post-Process] File already at correct location');
                             }
+                        } else {
+                            console.log('[Post-Process] ❌ No matching files found in directory!');
                         }
                     } catch (renameErr) {
-                        console.warn('[Download] ⚠️ Rename failed:', renameErr.message);
+                        console.error('[Post-Process] ❌ Rename operation failed:');
+                        console.error('[Post-Process] Error:', renameErr.message);
+                        console.error('[Post-Process] Stack:', renameErr.stack ? renameErr.stack.substring(0, 200) : 'N/A');
+                    }
+                } else {
+                    console.log('[Post-Process] No merge needed or directory not found');
+                    
+                    // Verify file exists at final path anyway
+                    if (fs.existsSync(finalPath)) {
+                        try {
+                            const stats = fs.statSync(finalPath);
+                            console.log('[Post-Process] ✅ File verified at final path');
+                            console.log('[Post-Process] File size:', (stats.size / 1024 / 1024).toFixed(2), 'MB');
+                        } catch (e) {
+                            console.log('[Post-Process] ⚠️ Could not verify file:', e.message);
+                        }
+                    } else {
+                        console.log('[Post-Process] ⚠️ File NOT found at final path:', finalPath);
                     }
                 }
-                console.log('[Download] ✅ Success:', title, '(' + selectedFormat.resolution + ')');
+                
+                console.log('═'.repeat(70));
+                console.log('[Download] ✅✅✅ SUCCESS:', title, '(' + selectedFormat.resolution + ')');
+                console.log('═'.repeat(70) + '\n');
             } else {
-                console.error('[Download] ❌ Failed:', title);
+                console.error('\n' + '═'.repeat(70));
+                console.error('[Download] ❌❌❌ FAILED:', title);
+                console.error('[Download] Selected format:', selectedFormat.resolution, '(' + selectedFormat.formatId + ')');
+                console.error('═'.repeat(70) + '\n');
             }
         } catch (err) {
-            console.error('[Download] Exception:', err.message);
+            console.error('\n' + '═'.repeat(70));
+            console.error('[Download] 💥 EXCEPTION CAUGHT');
+            console.error('[Download] Error message:', err.message);
+            console.error('[Download] Error stack:', err.stack ? err.stack.substring(0, 300) : 'N/A');
+            console.error('═'.repeat(70) + '\n');
+            
             if (activeDownloads.has(jobId)) {
                 activeDownloads.get(jobId).status = 'error';
                 activeDownloads.get(jobId).error = err.message;
