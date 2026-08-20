@@ -20,26 +20,210 @@ const AUTH_CONFIG = {
     // Rate limiting: delay between downloads in milliseconds (5 seconds default)
     downloadDelayMs: 5000,
     
+    // Random delay range (to appear more human-like)
+    randomDelayRangeMs: { min: 2000, max: 8000 },
+    
     // Retry configuration for 403 errors
     maxRetries: 3,
     retryDelayBaseMs: 5000, // Starts at 5 seconds, doubles each time
     
     // Authentication methods to try (in order of preference)
-    authMethods: ['oauth2', 'browser', 'cookies', 'none'],
+    authMethods: ['cookiefile', 'potoken', 'browser', 'legacy', 'api', 'none'],
     
     // Browser cookie sources (in order of preference)
-    browserSources: ['edge', 'chrome', 'firefox', 'brave']
+    browserSources: ['edge', 'chrome', 'firefox', 'brave'],
+    
+    // Cookie file path (Netscape format)
+    cookieFilePath: path.join(__dirname, '../cookies.txt'),
+    
+    // YouTube API key (optional - for API v3 method)
+    youtubeApiKey: process.env.YOUTUBE_API_KEY || '',
+    
+    // Anti-detection settings
+    userAgents: [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15'
+    ],
+    
+    // Proxy settings (optional)
+    proxyUrl: process.env.HTTP_PROXY || process.env.HTTPS_PROXY || ''
 };
 
 // Track last download time for rate limiting
 let lastDownloadTime = Date.now();
+let currentUserAgentIndex = 0;
+let cachedPoToken = null;
+let poTokenExpiry = 0;
 
-// Test which authentication method works best
+// Get random User-Agent to avoid detection
+function getRandomUserAgent() {
+    const ua = AUTH_CONFIG.userAgents[currentUserAgentIndex];
+    currentUserAgentIndex = (currentUserAgentIndex + 1) % AUTH_CONFIG.userAgents.length;
+    return ua;
+}
+
+// =============================================================================
+// METHOD 1: Cookie File (Manual Export from Browser)
+// =============================================================================
+
+// Check if cookie file exists and is valid
+function checkCookieFile() {
+    try {
+        if (!fs.existsSync(AUTH_CONFIG.cookieFilePath)) {
+            return false;
+        }
+        
+        const content = fs.readFileSync(AUTH_CONFIG.cookieFilePath, 'utf8');
+        
+        // Check if it looks like a valid Netscape cookie file
+        const lines = content.split('\n').filter(line => 
+            line.trim() && !line.startsWith('#')
+        );
+        
+        return lines.length > 0 && content.includes('.youtube.com');
+    } catch (err) {
+        console.error('[Cookie File] Error reading:', err.message);
+        return false;
+    }
+}
+
+// Generate instructions for creating cookie file
+function getCookieFileInstructions() {
+    return `
+╔══════════════════════════════════════════════════════════════╗
+║           HOW TO CREATE COOKIES.TXT FILE                     ║
+╠══════════════════════════════════════════════════════════════╣
+║                                                              ║
+║  STEP 1: Install "Get cookies.txt" browser extension         ║
+║          • Chrome/Edge: Search "Get cookies.txt LOCALLY"     ║
+║          • Or visit: https://chrome.google.com/webstore      ║
+║                                                              ║
+║  STEP 2: Go to youtube.com in your browser                   ║
+║          • Make sure you're LOGGED IN                        ║
+║          • Go to any video page                              ║
+║                                                              ║
+║  STEP 3: Click the extension icon                            ║
+║          • Select "Export" or "Current Site"                 ║
+║          • Save as "cookies.txt"                             ║
+║                                                              ║
+║  STEP 4: Place the file in:                                  ║
+║          ${AUTH_CONFIG.cookieFilePath}
+║                                                              ║
+║  OR use the API endpoint below to upload directly!            ║
+║                                                              ║
+╚══════════════════════════════════════════════════════════════╝
+`;
+}
+
+// =============================================================================
+// METHOD 2: PO Token (Proof of Origin Token) - NEW!
+// =============================================================================
+
+// Extract PO token from YouTube (bypasses most anti-bot measures)
+async function extractPoToken(videoId) {
+    // Cache PO token for 1 hour
+    if (cachedPoToken && Date.now() < poTokenExpiry) {
+        console.log('[PO Token] Using cached token');
+        return cachedPoToken;
+    }
+    
+    console.log('[PO Token] Extracting new token...');
+    
+    return new Promise((resolve) => {
+        // Use yt-dlp's built-in PO token extraction
+        const command = `yt-dlp --js-runtimes node --print "%(po_token)s" --no-check-certificate "https://www.youtube.com/watch?v=${videoId}"`;
+        
+        exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+            if (error || !stdout || stdout.includes('ERROR')) {
+                console.log('[PO Token] Extraction failed:', error?.message || stderr);
+                resolve(null);
+                return;
+            }
+            
+            const poToken = stdout.trim();
+            if (poToken && poToken.length > 10) {
+                cachedPoToken = poToken;
+                poTokenExpiry = Date.now() + (60 * 60 * 1000); // 1 hour cache
+                console.log('[PO Token] ✅ Extracted successfully');
+                resolve(poToken);
+            } else {
+                resolve(null);
+            }
+        });
+    });
+}
+
+// =============================================================================
+// METHOD 3: YouTube Data API v3 (Official API)
+// =============================================================================
+
+// Get video info using official YouTube API
+async function getVideoInfoAPI(videoId) {
+    if (!AUTH_CONFIG.youtubeApiKey) {
+        return null;
+    }
+    
+    return new Promise((resolve) => {
+        const url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,contentDetails,status&id=${videoId}&key=${AUTH_CONFIG.youtubeApiKey}`;
+        
+        const https = require('https');
+        https.get(url, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const json = JSON.parse(data);
+                    if (json.items && json.items.length > 0) {
+                        resolve(json.items[0]);
+                    } else {
+                        resolve(null);
+                    }
+                } catch (e) {
+                    resolve(null);
+                }
+            });
+        }).on('error', () => resolve(null));
+    });
+}
+
+// =============================================================================
+// METHOD 4: Legacy Server Connect (Older YouTube servers)
+// =============================================================================
+
+// Try connecting to legacy YouTube servers (sometimes bypasses blocks)
+function getLegacyFlags() {
+    return '--legacy-server-connect --extractor-args "youtube:player_client=web"';
+}
+
+// =============================================================================
+// METHOD 5: Proxy Support
+// =============================================================================
+
+function getProxyFlags() {
+    if (AUTH_CONFIG.proxyUrl) {
+        return `--proxy "${AUTH_CONFIG.proxyUrl}"`;
+    }
+    return '';
+}
+
+// Test which authentication method works best - FIXED VERSION
 async function testAuthMethod(method, videoId) {
     const testUrl = `https://www.youtube.com/watch?v=${videoId || 'dQw4w9WgXcQ'}`;
     let command = '';
     
     switch (method) {
+        case 'cookiefile':
+            if (!checkCookieFile()) {
+                return { success: false, error: 'Cookie file not found' };
+            }
+            command = `yt-dlp --js-runtimes node --cookies "${AUTH_CONFIG.cookieFilePath}" --no-check-certificate --skip-download "${testUrl}"`;
+            break;
+        case 'potoken':
+            command = `yt-dlp --js-runtimes node --extractor-args "youtube:po_token=web+auto" --no-check-certificate --skip-download "${testUrl}"`;
+            break;
         case 'oauth2':
             command = `yt-dlp --js-runtimes node --oauth2 --no-check-certificate --skip-download "${testUrl}"`;
             break;
@@ -48,6 +232,14 @@ async function testAuthMethod(method, videoId) {
             if (!browser) return { success: false, error: 'No browser found' };
             command = `yt-dlp --js-runtimes node --cookies-from-browser ${browser} --no-check-certificate --skip-download "${testUrl}"`;
             break;
+        case 'legacy':
+            command = `yt-dlp --js-runtimes node ${getLegacyFlags()} --no-check-certificate --skip-download "${testUrl}"`;
+            break;
+        case 'api':
+            if (!AUTH_CONFIG.youtubeApiKey) return { success: false, error: 'API key not configured' };
+            // API method doesn't use yt-dlp for testing
+            const apiInfo = await getVideoInfoAPI(videoId);
+            return apiInfo ? { success: true, method: 'api', details: 'API v3 works' } : { success: false, error: 'API request failed' };
         case 'cookies':
             command = `yt-dlp --js-runtimes node --no-check-certificate --skip-download "${testUrl}"`;
             break;
@@ -55,26 +247,68 @@ async function testAuthMethod(method, videoId) {
             command = `yt-dlp --js-runtimes node --no-check-certificate --skip-download "${testUrl}"`;
     }
     
+    // For non-API methods, run yt-dlp command
+    if (method === 'api') {
+        return await testAuthMethod(method, videoId); // Already handled above
+    }
+    
     return new Promise((resolve) => {
-        exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+        exec(command, { timeout: 45000 }, (error, stdout, stderr) => {
             const output = stdout + stderr;
             
-            // Check for specific errors
-            if (error) {
-                if (output.includes('403') || output.includes('Forbidden')) {
-                    resolve({ success: false, error: '403 Forbidden' });
-                } else if (output.includes('Sign in') || output.includes('login')) {
-                    resolve({ success: false, error: 'Login required' });
-                } else {
-                    resolve({ success: false, error: error.message });
+            console.log(`[Auth Test ${method}] Output sample:`, output.substring(0, 300));
+            
+            // CRITICAL FIX: Check for actual SUCCESS indicators, not just page extraction
+            const successIndicators = [
+                'has already been downloaded',
+                'Downloading 1 format(s)',
+                '100%',
+                '[info] Available formats',
+                'Title:',
+                'Duration:',
+                'Upload date:'
+            ];
+            
+            const failureIndicators = [
+                '403',
+                'Forbidden',
+                'Sign in to confirm you\'re not a bot',
+                'login required',
+                'ERROR'
+            ];
+            
+            // Check for failures FIRST
+            for (const failIndicator of failureIndicators) {
+                if (output.includes(failIndicator)) {
+                    console.log(`[Auth Test ${method}] ❌ Failed:`, failIndicator);
+                    resolve({ success: false, error: `${failIndicator} detected` });
+                    return;
                 }
+            }
+            
+            // Then check for actual success
+            const hasSuccessIndicator = successIndicators.some(indicator => output.includes(indicator));
+            
+            if (error && !hasSuccessIndicator) {
+                // Error occurred and no success indicator found
+                console.log(`[Auth Test ${method}] ❌ Error:`, error.message);
+                resolve({ success: false, error: error.message });
+            } else if (hasSuccessIndicator) {
+                // Found real success indicator
+                console.log(`[Auth Test ${method}] ✅ Success confirmed`);
+                
+                // Additional check: did we extract cookies?
+                const cookiesExtracted = output.includes('Extracted') && !output.includes('Extracted 0');
+                resolve({ 
+                    success: true, 
+                    method: method,
+                    cookiesWork: cookiesExtracted,
+                    details: output.substring(0, 500)
+                });
             } else {
-                // Check if we got video info (success)
-                if (output.includes('Extracting URL') || output.includes('Downloading webpage')) {
-                    resolve({ success: true, method: method });
-                } else {
-                    resolve({ success: false, error: 'Unknown response' });
-                }
+                // No clear indicator - treat as failure
+                console.log(`[Auth Test ${method}] ⚠️ Unclear response`);
+                resolve({ success: false, error: 'No clear success or failure indicators' });
             }
         });
     });
@@ -124,11 +358,19 @@ async function getAuthFlags(videoId) {
             console.log(`[Auth] ✅ Method ${method} works!`);
             
             switch (method) {
+                case 'cookiefile':
+                    return `--js-runtimes node --cookies "${AUTH_CONFIG.cookieFilePath}"`;
+                case 'potoken':
+                    return '--js-runtimes node --extractor-args "youtube:po_token=web+auto"';
                 case 'oauth2':
                     return '--js-runtimes node --oauth2';
                 case 'browser':
                     const browser = detectBestBrowser();
                     return `--js-runtimes node --cookies-from-browser ${browser}`;
+                case 'legacy':
+                    return `--js-runtimes node ${getLegacyFlags()}`;
+                case 'api':
+                    return '--js-runtimes node'; // API doesn't need special flags for yt-dlp
                 default:
                     return '--js-runtimes node';
             }
@@ -137,20 +379,33 @@ async function getAuthFlags(videoId) {
         }
     }
     
-    // All methods failed - use basic flags
-    console.log('[Auth] ⚠️ Using no authentication (may have issues)');
-    return '--js-runtimes node';
+    // All methods failed - use basic flags with legacy fallback
+    console.log('[Auth] ⚠️ Using no authentication with legacy mode');
+    return `--js-runtimes node ${getLegacyFlags()}`;
 }
 
-// Apply rate limiting - wait appropriate time between downloads
+// Apply rate limiting - wait appropriate time between downloads (with randomness)
 async function applyRateLimit() {
     const now = Date.now();
     const timeSinceLastDownload = now - lastDownloadTime;
     
-    if (timeSinceLastDownload < AUTH_CONFIG.downloadDelayMs) {
-        const waitTime = AUTH_CONFIG.downloadDelayMs - timeSinceLastDownload;
-        console.log(`[Rate Limit] Waiting ${waitTime}ms to avoid triggering YouTube's anti-bot protection...`);
+    // Use random delay within range to appear more human-like
+    const randomDelay = Math.floor(
+        Math.random() * (AUTH_CONFIG.randomDelayRangeMs.max - AUTH_CONFIG.randomDelayRangeMs.min) + 
+        AUTH_CONFIG.randomDelayRangeMs.min
+    );
+    
+    const requiredDelay = Math.max(AUTH_CONFIG.downloadDelayMs, randomDelay);
+    
+    if (timeSinceLastDownload < requiredDelay) {
+        const waitTime = requiredDelay - timeSinceLastDownload;
+        console.log(`[Rate Limit] Waiting ${Math.round(waitTime)}ms (random delay) to avoid detection...`);
         await new Promise(resolve => setTimeout(resolve, waitTime));
+    } else if (randomDelay > 1000) {
+        // Add small random delay even if not required
+        const shortDelay = Math.min(randomDelay, 3000);
+        console.log(`[Rate Limit] Adding ${Math.round(shortDelay)}ms human-like delay...`);
+        await new Promise(resolve => setTimeout(resolve, shortDelay));
     }
     
     lastDownloadTime = Date.now();
@@ -1061,11 +1316,14 @@ async function executeDownload(reqBody, res, jobId) {
         analyzingJob.speed = '';
         
         // STEP 3: Build yt-dlp command with detected format and auth
+        const userAgent = getRandomUserAgent();  // Rotate User-Agent
         var command = `yt-dlp ${authFlags}`;
         
-        // Add essential flags
-        command += ' --no-check-certificate';           // Skip SSL verification issues
-        command += ' --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"';  // Standard browser UA
+        // Add essential anti-detection flags
+        command += ' --no-check-certificate';                    // Skip SSL verification issues
+        command += ` --user-agent "${userAgent}"`;               // Rotating browser UA
+        command += ' --add-header "Accept-Language:en-US,en;q=0.9"';  // Language header
+        command += ' --add-header "Accept:text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"';  // Accept header
         
         // Add the auto-detected format (format 18 = pre-merged 360p MP4 with audio)
         command += ` -f "${formatString}"`;
@@ -1081,6 +1339,7 @@ async function executeDownload(reqBody, res, jobId) {
         command += ` "https://www.youtube.com/watch?v=${videoId}"`;
         
         console.log('[Download] Final command:', command);
+        console.log('[Anti-Detect] Using UA:', userAgent.substring(0, 50) + '...');
         
         // STEP 4: Execute download with retry logic and rate limiting
         const result = await downloadWithRetry(command, jobId, videoId, title, channelId, finalPath, res);
@@ -1142,13 +1401,20 @@ app.get('/api/auth/test', async function(req, res) {
         }
     }
     
+    // Check cookie file status
+    results.cookieFileExists = checkCookieFile();
+    
     res.json({
         status: 'Authentication test complete',
-        bestMethod: Object.keys(results).find(key => results[key].success === true) || 'none',
+        bestMethod: Object.keys(results).find(key => 
+            results[key] && results[key].success === true && key !== 'availableBrowsers' && key !== 'cookieFileExists'
+        ) || 'none',
         methods: results,
         config: {
             downloadDelayMs: AUTH_CONFIG.downloadDelayMs,
-            maxRetries: AUTH_CONFIG.maxRetries
+            maxRetries: AUTH_CONFIG.maxRetries,
+            hasApiKey: !!AUTH_CONFIG.youtubeApiKey,
+            hasProxy: !!AUTH_CONFIG.proxyUrl
         }
     });
 });
@@ -1157,11 +1423,84 @@ app.get('/api/auth/test', async function(req, res) {
 app.get('/api/auth/status', function(req, res) {
     res.json({
         status: 'OK',
-        authConfig: AUTH_CONFIG,
+        authConfig: {
+            ...AUTH_CONFIG,
+            youtubeApiKey: AUTH_CONFIG.youtubeApiKey ? '[SET]' : '[NOT SET]',
+            proxyUrl: AUTH_CONFIG.proxyUrl || '[NOT SET]',
+            cookieFilePath: AUTH_CONFIG.cookieFilePath
+        },
         lastDownloadTime: lastDownloadTime,
         timeSinceLastDownload: Date.now() - lastDownloadTime,
         nextDownloadAvailableAt: new Date(lastDownloadTime + AUTH_CONFIG.downloadDelayMs).toISOString(),
-        detectedBrowser: detectBestBrowser()
+        detectedBrowser: detectBestBrowser(),
+        cookieFileExists: checkCookieFile(),
+        poTokenCached: cachedPoToken ? true : false
+    });
+});
+
+// Get instructions for creating cookies.txt file
+app.get('/api/auth/cookie-instructions', function(req, res) {
+    res.json({
+        status: 'Instructions',
+        instructions: getCookieFileInstructions(),
+        cookieFilePath: AUTH_CONFIG.cookieFilePath,
+        cookieFileExists: checkCookieFile()
+    });
+});
+
+// Upload cookie file directly
+app.post('/api/auth/upload-cookies', function(req, res) {
+    if (!req.body.cookies) {
+        return res.status(400).json({ error: 'No cookies data provided' });
+    }
+    
+    try {
+        fs.writeFileSync(AUTH_CONFIG.cookieFilePath, req.body.cookies, 'utf8');
+        
+        console.log('[Auth] Cookie file uploaded successfully');
+        
+        res.json({
+            success: true,
+            message: 'Cookie file saved successfully',
+            path: AUTH_CONFIG.cookieFilePath,
+            size: req.body.cookies.length
+        });
+    } catch (err) {
+        console.error('[Auth] Error saving cookie file:', err.message);
+        res.status(500).json({ error: 'Failed to save cookie file: ' + err.message });
+    }
+});
+
+// Set YouTube API key
+app.post('/api/auth/set-api-key', function(req, res) {
+    if (!req.body.apiKey) {
+        return res.status(400).json({ error: 'No API key provided' });
+    }
+    
+    AUTH_CONFIG.youtubeApiKey = req.body.apiKey;
+    
+    console.log('[Auth] YouTube API key set');
+    
+    res.json({
+        success: true,
+        message: 'YouTube API key configured successfully'
+    });
+});
+
+// Set proxy URL
+app.post('/api/auth/set-proxy', function(req, res) {
+    if (!req.body.proxyUrl) {
+        return res.status(400).json({ error: 'No proxy URL provided' });
+    }
+    
+    AUTH_CONFIG.proxyUrl = req.body.proxyUrl;
+    
+    console.log('[Auth] Proxy set:', req.body.proxyUrl);
+    
+    res.json({
+        success: true,
+        message: 'Proxy configured successfully',
+        proxyUrl: AUTH_CONFIG.proxyUrl
     });
 });
 
