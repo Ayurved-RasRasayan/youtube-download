@@ -728,6 +728,15 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
     const safeTitle = sanitizeFilename(title.replace(/[^a-z0-9]/gi, '_').substring(0, 100));
     const channelFolder = sanitizeFilename(channelId || 'general');
     
+    // DEBUG: Log what we're checking
+    console.log(`\n[Skip-Check DEBUG]`);
+    console.log(`   Video ID: ${videoId}`);
+    console.log(`   Title: ${title}`);
+    console.log(`   Safe Title: ${safeTitle}`);
+    console.log(`   Channel ID: ${channelId}`);
+    console.log(`   Channel Folder: ${channelFolder}`);
+    console.log(`   Downloads Dir: ${effectiveDownloadsDir}`);
+    
     // Possible locations: Videos folder or Live Streams folder
     const possiblePaths = [
         path.join(effectiveDownloadsDir, channelFolder, 'Videos'),
@@ -735,6 +744,23 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
         effectiveDownloadsDir, // Also check root downloads dir
         path.join(effectiveDownloadsDir, channelFolder) // Check channel root
     ];
+    
+    console.log(`   Checking paths:`);
+    possiblePaths.forEach((p, i) => {
+        const exists = fs.existsSync(p);
+        console.log(`     [${i+1}] ${p} - ${exists ? 'EXISTS' : 'NOT FOUND'}`);
+        if (exists) {
+            try {
+                const files = fs.readdirSync(p);
+                console.log(`         Files found: ${files.length}`);
+                if (files.length > 0) {
+                    console.log(`         First 5 files: ${files.slice(0, 5).join(', ')}`);
+                }
+            } catch (e) {
+                console.log(`         Error reading: ${e.message}`);
+            }
+        }
+    });
     
     // Common video file extensions to check
     const videoExtensions = ['.mp4', '.webm', '.mkv', '.avi', '.flv', '.m4a', '.mp3'];
@@ -751,6 +777,7 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
                 
                 // Check 1: Exact title match (with sanitized filename)
                 if (fileName === safeTitle && videoExtensions.includes(ext)) {
+                    console.log(`   ✅ MATCH (exact-title): ${file}`);
                     return {
                         exists: true,
                         filePath: path.join(dirPath, file),
@@ -761,6 +788,7 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
                 
                 // Check 2: Video ID in filename (yt-dlp sometimes adds it)
                 if (fileName.includes(videoId) && videoExtensions.includes(ext)) {
+                    console.log(`   ✅ MATCH (video-id): ${file}`);
                     return {
                         exists: true,
                         filePath: path.join(dirPath, file),
@@ -772,6 +800,7 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
                 // Check 3: Partial title match (handles slight variations)
                 const safeTitleShort = safeTitle.substring(0, 30);
                 if (fileName.includes(safeTitleShort) && videoExtensions.includes(ext)) {
+                    console.log(`   ✅ MATCH (partial-title): ${file}`);
                     return {
                         exists: true,
                         filePath: path.join(dirPath, file),
@@ -785,6 +814,7 @@ function checkIfAlreadyDownloaded(videoId, title, channelId, outputFolder) {
         }
     }
     
+    console.log(`   ❌ NO MATCH FOUND`);
     return { exists: false, filePath: null, fileName: null, matchType: null };
 }
 
@@ -832,6 +862,90 @@ function getTimeAgo(date) {
     }
     return 'just now';
 }
+
+// API Endpoint: Debug skip-check system (shows what's happening)
+app.get('/api/debug/skip-check', function(req, res) {
+    const testVideoId = req.query.videoId || 'test123';
+    const testTitle = req.query.title || 'Test Video';
+    const testChannelId = req.query.channelId || 'GoldRasayan';
+    
+    console.log('\n[DEBUG] === SKIP CHECK DEBUG INFO ===');
+    
+    // Show system configuration
+    const debugInfo = {
+        timestamp: new Date().toISOString(),
+        systemConfig: {
+            DOWNLOADS_DIR: DOWNLOADS_DIR,
+            DEFAULT_DOWNLOADS_DIR: DEFAULT_DOWNLOADS_DIR,
+            osHomedir: os.homedir(),
+            platform: process.platform
+        },
+        testParameters: {
+            videoId: testVideoId,
+            title: testTitle,
+            channelId: testChannelId,
+            safeTitle: sanitizeFilename(testTitle.replace(/[^a-z0-9]/gi, '_').substring(0, 100)),
+            channelFolder: sanitizeFilename(testChannelId)
+        },
+        pathsChecked: [],
+        filesFound: []
+    };
+    
+    // Check and list actual paths
+    const channelFolder = sanitizeFilename(testChannelId);
+    const pathsToCheck = [
+        path.join(DOWNLOADS_DIR, channelFolder, 'Videos'),
+        path.join(DOWNLOADS_DIR, channelFolder, 'Live Streams'),
+        DOWNLOADS_DIR,
+        path.join(DOWNLOADS_DIR, channelFolder)
+    ];
+    
+    pathsToCheck.forEach(p => {
+        const exists = fs.existsSync(p);
+        const pathInfo = { path: p, exists: exists };
+        
+        if (exists) {
+            try {
+                const files = fs.readdirSync(p);
+                pathInfo.fileCount = files.length;
+                pathInfo.sampleFiles = files.slice(0, 10); // First 10 files
+                
+                // Get file details for first few
+                pathInfo.fileDetails = files.slice(0, 5).map(f => {
+                    const filePath = path.join(p, f);
+                    try {
+                        const stats = fs.statSync(filePath);
+                        return {
+                            name: f,
+                            size: formatFileSize(stats.size),
+                            modified: stats.mtime.toISOString()
+                        };
+                    } catch(e) {
+                        return { name: f, error: e.message };
+                    }
+                });
+                
+                debugInfo.filesFound.push(...files);
+            } catch (e) {
+                pathInfo.error = e.message;
+            }
+        }
+        
+        debugInfo.pathsChecked.push(pathInfo);
+    });
+    
+    // Run actual check
+    const checkResult = checkIfAlreadyDownloaded(testVideoId, testTitle, testChannelId, null);
+    debugInfo.checkResult = checkResult;
+    
+    if (checkResult.exists) {
+        debugInfo.fileInfo = getFileInfo(checkResult.filePath);
+    }
+    
+    console.log('[DEBUG] === END DEBUG INFO ===\n');
+    
+    res.json(debugInfo);
+});
 
 // API Endpoint: Check if specific video is already downloaded
 app.get('/api/check-downloaded/:videoId', function(req, res) {
@@ -1325,6 +1439,7 @@ app.post('/api/channels', async function(req, res) {
     }
 
     try {
+        console.log('\n[Channel] Loading channel:', channelId);
         const channelData = await fetchChannelInfo(channelId, url);
         
         // Check for new videos
@@ -1351,6 +1466,59 @@ app.post('/api/channels', async function(req, res) {
         });
 
         channelData.newVideoCount = newCount;
+        
+        // =========================================================================
+        // AUTO-SYNC: Check all videos against existing files in output folder
+        // =========================================================================
+        console.log(`[Channel Sync] Checking ${channelData.videos.length + channelData.liveVideos.length} videos against existing files...`);
+        
+        let alreadyDownloadedCount = 0;
+        let needDownloadCount = 0;
+        
+        // Check regular videos
+        channelData.videos.forEach(function(video) {
+            const existingFile = checkIfAlreadyDownloaded(video.id, video.title, channelId, DOWNLOADS_DIR);
+            if (existingFile.exists) {
+                video.alreadyDownloaded = true;  // Mark for frontend
+                video.existingFile = existingFile.fileName;
+                video.existingFilePath = existingFile.filePath;
+                video.fileInfo = getFileInfo(existingFile.filePath);
+                video.matchType = existingFile.matchType;
+                alreadyDownloadedCount++;
+                console.log(`   ✅ Already downloaded: ${video.title}`);
+            } else {
+                video.alreadyDownloaded = false;
+                needDownloadCount++;
+            }
+        });
+        
+        // Check live videos
+        channelData.liveVideos.forEach(function(video) {
+            const existingFile = checkIfAlreadyDownloaded(video.id, video.title, channelId, DOWNLOADS_DIR);
+            if (existingFile.exists) {
+                video.alreadyDownloaded = true;
+                video.existingFile = existingFile.fileName;
+                video.existingFilePath = existingFile.filePath;
+                video.fileInfo = getFileInfo(existingFile.filePath);
+                video.matchType = existingFile.matchType;
+                alreadyDownloadedCount++;
+                console.log(`   ✅ Already downloaded (live): ${video.title}`);
+            } else {
+                video.alreadyDownloaded = false;
+                needDownloadCount++;
+            }
+        });
+        
+        // Add sync stats to response
+        channelData.syncStats = {
+            totalVideos: channelData.videos.length + channelData.liveVideos.length,
+            alreadyDownloaded: alreadyDownloadedCount,
+            needDownload: needDownloadCount,
+            skipPercent: ((alreadyDownloadedCount / (channelData.videos.length + channelData.liveVideos.length)) * 100).toFixed(1) + '%'
+        };
+        
+        console.log(`[Channel Sync] Complete: ${alreadyDownloadedCount} already downloaded, ${needDownloadCount} need download`);
+        console.log(`[Channel Sync] Skip rate: ${channelData.syncStats.skipPercent}`);
 
         // Update or add channel
         const existingIndex = appData.channels.findIndex(function(c) { return c.id === channelId; });
@@ -1364,8 +1532,9 @@ app.post('/api/channels', async function(req, res) {
         
         res.json({ 
             success: true, 
-            message: 'Channel loaded! Found ' + newCount + ' new videos',
-            channel: channelData 
+            message: `Channel loaded! Found ${newCount} new videos, ${alreadyDownloadedCount} already downloaded`,
+            channel: channelData,
+            syncStats: channelData.syncStats
         });
     } catch (error) {
         console.error('Error loading channel:', error);
