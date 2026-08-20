@@ -500,17 +500,27 @@
                             <button class="btn-primary btn-small" onclick="downloadVideo(${index})">
                                 ⬇️ Download
                             </button>
-                        ` : video.downloadStatus === 'downloaded' ? `
-                            <span style="color: #388e3c; font-size: 0.9em;">✅ Done</span>
+                        ` : (video.downloadStatus === 'downloaded' || video.downloadStatus === 'completed') ? `
+                            <button class="btn-success btn-small" onclick="downloadFile('${video.id || ''}', '${(video.title || 'video').replace(/'/g, "\\'")}', '${video.filePath || ''}')">
+                                📥 Download File
+                            </button>
+                            <span style="color: #388e3c; font-size: 0.9em; margin-left: 8px;">✅ Done</span>
                         ` : video.downloadStatus === 'downloading' ? `
                             <span class="status-badge status-downloading">
                                 <span class="spinner"></span>Downloading
                             </span>
                         ` : video.downloadStatus === 'skipped' ? `
-                            <span style="color: #f57c00; font-size: 0.9em;">⏭️ Skipped</span>
+                            <button class="btn-success btn-small" onclick="downloadFile('${video.id || ''}', '${(video.title || 'video').replace(/'/g, "\\'")}', '${video.filePath || ''}')">
+                                📥 Get File
+                            </button>
+                            <span style="color: #f57c00; font-size: 0.9em; margin-left: 8px;">⏭️ Exists</span>
+                        ` : video.downloadStatus === 'error' ? `
+                            <button class="btn-danger btn-small" onclick="downloadVideo(${index})">
+                                🔄 Retry
+                            </button>
                         ` : `
                             <button class="btn-primary btn-small" onclick="downloadVideo(${index})">
-                                ⬇️ Retry
+                                ⬇️ Download
                             </button>
                         `}
                     </div>
@@ -632,6 +642,50 @@
                 video.error = error.message;
                 renderVideos();
                 showAlert(`Error downloading: ${error.message}`, 'error');
+            }
+        }
+
+        // Download completed file to local machine
+        async function downloadFile(videoId, title, filePath) {
+            try {
+                showAlert(`Preparing download: ${title}...`, 'info');
+                
+                let downloadUrl;
+                
+                if (filePath) {
+                    // Use the file path directly
+                    const filename = filePath.split(/[/\\]/).pop();
+                    downloadUrl = `/api/download-file/by-name/${encodeURIComponent(filename)}?download=true`;
+                } else if (videoId) {
+                    // Try to get by download ID (video ID)
+                    downloadUrl = `/api/download-file/${videoId}`;
+                } else {
+                    throw new Error('No file information available');
+                }
+                
+                console.log('[Download File] URL:', downloadUrl);
+                
+                // Create a temporary link and click it to trigger download
+                const link = document.createElement('a');
+                link.href = downloadUrl;
+                link.download = title.replace(/[^a-zA-Z0-9._-]/g, '_') + '.mp4';
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                
+                // Clean up after a short delay
+                setTimeout(() => {
+                    document.body.removeChild(link);
+                }, 100);
+                
+                showAlert(`Downloading: ${title}`, 'success');
+                
+            } catch (error) {
+                console.error('[Download File] Error:', error);
+                showAlert(`Error downloading file: ${error.message}`, 'error');
+                
+                // Fallback: open files list in new tab
+                window.open('/api/files', '_blank');
             }
         }
 

@@ -449,6 +449,19 @@ const PORT = process.env.PORT || 3000;
 // Download configuration
 const DOWNLOADS_DIR = path.join(process.cwd(), 'downloads');
 
+// ⚡ Check for ffmpeg availability (required for merging video+audio)
+let FFMPEG_AVAILABLE = false;
+try {
+    const { execSync } = require('child_process');
+    execSync('ffmpeg -version', { stdio: 'pipe' });
+    FFMPEG_AVAILABLE = true;
+    console.log('✅ [FFmpeg] Found! Video+Audio merging enabled');
+} catch (e) {
+    console.log('⚠️ [FFmpeg] NOT FOUND! Downloads may not have audio.');
+    console.log('   Install: winget install ffmpeg  (Windows)');
+    console.log('   Or:     apt install ffmpeg      (Linux)');
+}
+
 // Auth configuration - will be updated after path conversion
 const AUTH_CONFIG = {
     cookieFilePath: path.join(process.cwd(), '..', 'cookies.txt'), // Will be converted to native path
@@ -1530,6 +1543,186 @@ app.get('/api/downloads', (req, res) => {
     });
 });
 
+// =============================================================================
+// FILE DOWNLOAD ENDPOINT - Serve completed files for download
+// =============================================================================
+
+/**
+ * GET /api/download-file/:id - Download a completed video file
+ * Returns the actual file for browser download
+ */
+app.get('/api/download-file/:id', (req, res) => {
+    const downloadId = req.params.id;
+    
+    console.log('\n[File Download] Request for download ID:', downloadId);
+    
+    // Find the download record
+    const download = downloadManager.get(downloadId);
+    
+    if (!download) {
+        console.log('[File Download] ❌ Download not found:', downloadId);
+        return res.status(404).json({
+            success: false,
+            error: 'Download not found'
+        });
+    }
+    
+    // Check if download is completed
+    if (download.status !== 'completed' && download.status !== 'skipped') {
+        console.log('[File Download] ❌ Not ready for download. Status:', download.status);
+        return res.status(400).json({
+            success: false,
+            error: `Download not complete (status: ${download.status})`,
+            status: download.status
+        });
+    }
+    
+    // Get the file path
+    const filePath = download.outputPath || path.join(DOWNLOADS_DIR, download.filename);
+    
+    // Check if file exists on disk
+    if (!fs.existsSync(filePath)) {
+        // Try to find the file with different extensions
+        const baseName = filePath.replace(/\.[^.]+$/, '');
+        const extensions = ['.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'];
+        let foundPath = null;
+        
+        for (const ext of extensions) {
+            const testPath = baseName + ext;
+            if (fs.existsSync(testPath)) {
+                foundPath = testPath;
+                break;
+            }
+        }
+        
+        if (!foundPath) {
+            console.log('[File Download] ❌ File not found on disk:', filePath);
+            return res.status(404).json({
+                success: false,
+                error: 'File not found on disk',
+                expectedPath: filePath
+            });
+        }
+        
+        // Use found path
+        res.sendFile(path.resolve(foundPath), {
+            headers: {
+                'Content-Disposition': `attachment; filename="${encodeURIComponent(download.title || 'video.mp4')}"`
+            }
+        });
+        console.log('[File Download] ✅ Serving file (alternate extension):', foundPath);
+        return;
+    }
+    
+    // File exists - serve it for download
+    const fileName = download.filename || download.title || 'video.mp4';
+    console.log('[File Download] ✅ Serving file:', fileName, `(${download.sizeMB || '?'}MB)`);
+    
+    res.sendFile(path.resolve(filePath), {
+        headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Disposition': `attachment; filename="${encodeURIComponent(fileName)}"`
+        }
+    });
+});
+
+/**
+ * GET /api/files - List all downloaded files in downloads directory
+ */
+app.get('/api/files', (req, res) => {
+    try {
+        console.log('\n[Files] Listing downloaded files in:', DOWNLOADS_DIR);
+        
+        const files = fs.readdirSync(DOWNLOADS_DIR)
+            .filter(f => !f.startsWith('.') && f.match(/\.(mp4|webm|mkv|avi|mov|flv|mp3|m4a)$/i))
+            .map(filename => {
+                const filePath = path.join(DOWNLOADS_DIR, filename);
+                const stats = fs.statSync(filePath);
+                return {
+                    filename: filename,
+                    size: stats.size,
+                    sizeMB: (stats.size / (1024 * 1024)).toFixed(2),
+                    modified: stats.mtime.toISOString(),
+                    url: `/api/download-file/by-name/${encodeURIComponent(filename)}`,
+                    downloadUrl: `/api/download-file/by-name/${encodeURIComponent(filename)}?download=true`
+                };
+            })
+            .sort((a, b) => new Date(b.modified) - new Date(a.modified)); // Newest first
+        
+        console.log(`[Files] ✅ Found ${files.length} downloaded files`);
+        
+        res.json({
+            success: true,
+            files: files,
+            count: files.length,
+            directory: DOWNLOADS_DIR,
+            totalSizeMB: files.reduce((sum, f) => sum + parseFloat(f.sizeMB), 0).toFixed(2)
+        });
+        
+    } catch (error) {
+        console.error('[Files] ❌ Error listing files:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Failed to list files: ' + error.message
+        });
+    }
+});
+
+/**
+ * GET /api/download-file/by-name/:filename - Download by exact filename
+ */
+app.get('/api/download-file/by-name/:filename', (req, res) => {
+    const filename = decodeURIComponent(req.params.filename);
+    const isDownload = req.query.download === 'true';
+    
+    console.log(`\n[File Download] Request for file: ${filename} (download: ${isDownload})`);
+    
+    // Security: Prevent directory traversal
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+        return res.status(400).json({
+            success: false,
+            error: 'Invalid filename'
+        });
+    }
+    
+    const filePath = path.join(DOWNLOADS_DIR, filename);
+    
+    if (!fs.existsSync(filePath)) {
+        console.log('[File Download] ❌ File not found:', filePath);
+        return res.status(404).json({
+            success: false,
+            error: 'File not found',
+            filename: filename
+        });
+    }
+    
+    const stats = fs.statSync(filePath);
+    console.log(`[File Download] ✅ Serving: ${filename} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+    
+    res.sendFile(path.resolve(filePath), {
+        headers: {
+            'Content-Type': getContentType(filename),
+            'Content-Disposition': `${isDownload ? 'attachment' : 'inline'}; filename="${encodeURIComponent(filename)}"`
+        }
+    });
+});
+
+// Helper to get content type based on extension
+function getContentType(filename) {
+    const ext = path.extname(filename).toLowerCase();
+    const types = {
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+        '.mkv': 'video/x-matroska',
+        '.avi': 'video/x-msvideo',
+        '.mov': 'video/quicktime',
+        '.flv': 'video/x-flv',
+        '.mp3': 'audio/mpeg',
+        '.m4a': 'audio/mp4'
+    };
+    return types[ext] || 'application/octet-stream';
+}
+
 // Batch download endpoint (for multiple videos)
 app.post('/api/download/batch', async (req, res) => {
     try {
@@ -2195,12 +2388,26 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
             
             // Build command with analyzed format - use formatString if available, otherwise construct it
             let baseCmd;
+            const needsMerge = selectedFormatId.includes('+');  // Format like "602+233" needs merging
+            
             if (analysis.formatString && !analysis.fallbackUsed) {
                 // Use the exact format string from analysis (most reliable)
-                baseCmd = `yt-dlp ${formatString} --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                if (needsMerge && !FFMPEG_AVAILABLE) {
+                    // ⚠️ Format requires merging but no ffmpeg - use combined format instead
+                    console.log('[Smart Download] ⚠️ Format needs merging but FFmpeg unavailable!');
+                    console.log('[Smart Download] Using "best" format instead (combined video+audio)');
+                    baseCmd = `yt-dlp -f "best[height<=480]/best" --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                } else {
+                    baseCmd = `yt-dlp ${formatString} --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                }
             } else {
                 // Use fallback or constructed format
-                baseCmd = `yt-dlp --format "${selectedFormatId}" --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                if ((selectedFormatId.includes('+') || selectedFormatId === 'worst') && !FFMPEG_AVAILABLE) {
+                    console.log('[Smart Download] ⚠️ Merge needed but no FFmpeg - using safe format');
+                    baseCmd = `yt-dlp -f "worst[height<=360]/worst" --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                } else {
+                    baseCmd = `yt-dlp --format "${selectedFormatId}" --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+                }
             }
             
             // Add reliability flags for better downloads
@@ -2810,9 +3017,21 @@ app.listen(PORT, () => {
     console.log('║                                                              ║');
     console.log('║                   🚀 SERVER STARTED! 🚀                      ║');
     console.log('║                                                              ║');
-    console.log(`║  🌐 Server running at: http://localhost:${PORT}                     ║`);
-    console.log(`║  🍪 Cookie Mode: ${isCookiesFileValid() ? 'cookies.txt ✅' : 'Browser (' + AUTH_CONFIG.browserName + ') ⚠️'}                  ║`);
+    console.log(`║  🌐 Server:     http://localhost:${PORT}                            ║`);
+    console.log(`║  📁 Downloads:  ${DOWNLOADS_DIR}                                    ║`);
+    console.log(`║  🎬 FFmpeg:     ${FFMPEG_AVAILABLE ? '✅ Installed (merging enabled)' : '⚠️ Not found (using fallback)'}        ║`);
+    console.log(`║  🍪 Cookies:    ${isCookiesFileValid() ? '✅ Valid' : '⚠️ Using browser'}                              ║`);
     console.log('║                                                              ║');
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log('║  Available API Endpoints:                                   ║');
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log('║  POST   /api/channels          Load channel videos           ║');
+    console.log('║  POST   /api/download           Download single video        ║');
+    console.log('║  POST   /api/download/batch     Batch download (sequential)  ║');
+    console.log('║  GET    /api/download-queue     Queue status (polling)       ║');
+    console.log('║  GET    /api/download-file/:id  Download file by ID         ║');
+    console.log('║  GET    /api/files              List all downloaded files    ║');
+    console.log('║  GET    /api/download-file/by-name/:fn  Download by filename ║');
     console.log('╚══════════════════════════════════════════════════════════════╝');
     console.log('');
     console.log('Press Ctrl+C to stop the server');
