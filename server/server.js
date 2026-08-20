@@ -1019,7 +1019,190 @@ app.post('/api/download/start', async (req, res) => {
     }
 });
 
-// Download progress endpoint
+// FRONTEND COMPATIBLE: POST /api/download (main download endpoint frontend expects!)
+app.post('/api/download', async (req, res) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('⬇️ [Download] POST /api/download - Frontend Download Request');
+    console.log('='.repeat(80));
+    console.log('[Download] Request body:', JSON.stringify(req.body, null, 2));
+    
+    try {
+        const { 
+            url,           // Video URL
+            videoId,       // Video ID (alternative)
+            channelId,     // Parent channel ID
+            format,        // Video format preference
+            quality,        // Quality preference
+            filename       // Custom filename
+        } = req.body;
+        
+        // Determine video URL
+        const videoUrl = url || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : null);
+        
+        if (!videoUrl) {
+            console.log('[Download] ❌ ERROR: No URL or videoId provided!');
+            return res.status(400).json({
+                success: false,
+                error: 'Video URL or videoId required'
+            });
+        }
+
+        console.log('[Download] Processing download:');
+        console.log('   - URL:', videoUrl);
+        console.log('   - Video ID:', videoId || 'extracted from URL');
+        console.log('   - Channel ID:', channelId || 'N/A');
+        console.log('   - Format:', format || 'auto (best)');
+        console.log('   - Quality:', quality || 'auto');
+
+        const downloadId = uuidv4();
+        const safeFilename = (filename || `video_${downloadId}`).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const outputFilename = safeFilename.endsWith('.mp4') ? safeFilename : `${safeFilename}.mp4`;
+        const outputPath = path.join(DOWNLOADS_DIR, outputFilename);
+
+        console.log('[Download] Creating download job:');
+        console.log('   - Download ID:', downloadId);
+        console.log('   - Output file:', outputFilename);
+        console.log('   - Full path:', outputPath);
+
+        const download = downloadManager.add({
+            id: downloadId,
+            url: videoUrl,
+            videoId: videoId,
+            channelId: channelId,
+            filename: outputFilename,
+            outputPath: outputPath,
+            format: format || 'best',
+            quality: quality || 'auto',
+            status: 'queued',
+            progress: 0,
+            startTime: null,
+            endTime: null,
+            createdAt: new Date().toISOString()
+        });
+
+        console.log('[Download] ✅ Job created, starting execution...');
+        
+        // Start download asynchronously (don't await - return immediately)
+        setImmediate(async () => {
+            try {
+                download.status = 'downloading';
+                download.startTime = Date.now();
+                
+                await executeDownload(
+                    downloadId,
+                    videoUrl,
+                    outputPath,
+                    format || 'best',
+                    (progress) => {
+                        download.progress = progress.percent;
+                        download.downloaded = progress.downloaded;
+                        download.total = progress.total;
+                        
+                        // Log progress every 25%
+                        if (progress.percent % 25 < 5 || progress.percent === 100) {
+                            console.log(`[Download ${downloadId.substring(0,8)}] Progress: ${progress.percent}%`);
+                        }
+                    },
+                    (result) => {
+                        download.status = 'completed';
+                        download.endTime = Date.now();
+                        console.log(`[Download ${downloadId.substring(0,8)}] ✅ COMPLETED!`);
+                    },
+                    (error) => {
+                        download.status = 'error';
+                        download.error = error;
+                        download.endTime = Date.now();
+                        console.log(`[Download ${downloadId.substring(0,8)}] ❌ FAILED:`, error);
+                    }
+                );
+            } catch (err) {
+                download.status = 'error';
+                download.error = err.message;
+                download.endTime = Date.now();
+                console.log(`[Download ${downloadId.substring(0,8)}] ❌ EXCEPTION:`, err.message);
+            }
+        });
+
+        console.log('[Download] ✅ Response sent to frontend');
+        console.log('='.repeat(80) + '\n');
+
+        // Return immediately with job info (frontend can poll for status)
+        res.status(202).json({
+            success: true,
+            jobId: downloadId,
+            status: 'accepted',
+            message: 'Download queued successfully',
+            download: {
+                id: downloadId,
+                url: videoUrl,
+                filename: outputFilename,
+                status: 'queued',
+                format: format || 'best',
+                quality: quality || 'auto'
+            }
+        });
+
+    } catch (error) {
+        console.log('\n❌ [Download] CRITICAL ERROR:');
+        console.log('   Error:', error.message);
+        console.log('   Stack:', error.stack);
+        console.log('='.repeat(80) + '\n');
+        
+        res.status(500).json({
+            success: false,
+            error: 'Failed to create download job: ' + error.message,
+            timestamp: new Date().toISOString()
+        });
+    }
+});
+
+// GET /api/download/:jobId - Check download status (for polling)
+app.get('/api/download/:jobId', (req, res) => {
+    const { jobId } = req.params;
+    
+    console.log(`\n[Download Status] Checking job: ${jobId}`);
+    
+    const download = downloadManager.get(jobId);
+    
+    if (!download) {
+        console.log(`[Download Status] ❌ Job not found: ${jobId}`);
+        return res.status(404).json({
+            success: false,
+            error: 'Download job not found',
+            jobId: jobId
+        });
+    }
+    
+    console.log(`[Download Status] ✅ Job ${jobId.substring(0,8)}: ${download.status} (${download.progress}%)`);
+    
+    // Calculate duration if available
+    let duration = null;
+    if (download.startTime) {
+        const endTime = download.endTime || Date.now();
+        duration = Math.round((endTime - download.startTime) / 1000); // seconds
+    }
+    
+    res.json({
+        success: true,
+        download: {
+            id: download.id,
+            url: download.url,
+            filename: download.filename,
+            status: download.status,
+            progress: download.progress || 0,
+            downloaded: download.downloaded || 0,
+            total: download.total || 0,
+            error: download.error || null,
+            startTime: download.startTime,
+            endTime: download.endTime,
+            duration: duration,
+            format: download.format,
+            quality: download.quality
+        }
+    });
+});
+
+// Download progress endpoint (legacy /api/download/:id)
 app.get('/api/download/:id', (req, res) => {
     const download = downloadManager.get(req.params.id);
     
@@ -1433,8 +1616,10 @@ app.use((req, res) => {
     console.log('   POST /api/channels/:id/check');
     console.log('   GET  /api/channel/info');
     console.log('   POST /api/video/info');
+    console.log('   POST /api/download');           // ← MAIN DOWNLOAD ENDPOINT!
     console.log('   POST /api/download/start');
-    console.log('   GET  /api/download/:id');
+    console.log('   GET  /api/download/:jobId');     // ← Status check
+    console.log('   GET  /api/download/:id');       // Legacy status
     console.log('   POST /api/download/:id/cancel');
     console.log('   GET  /api/downloads');
     console.log('   POST /api/download/batch');
@@ -1451,6 +1636,8 @@ app.use((req, res) => {
             '/api/channels',
             '/api/channel/info',
             '/api/video/info',
+            '/api/download',              // ← ADD THIS!
+            '/api/download/start',
             '/api/download/start',
             '/api/downloads',
             '/api/system/status'
