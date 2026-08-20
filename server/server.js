@@ -189,42 +189,137 @@ function isCookiesFileValid() {
 }
 
 /**
- * Build yt-dlp command with smart cookie handling - WITH DEBUG LOGGING
- * Tries cookies.txt first, falls back to browser extraction
+ * Build MULTIPLE yt-dlp commands with different cookie strategies
+ * Returns array of commands to try in order of preference
  * @param {string} baseUrl - The base yt-dlp command (without cookie args)
  * @param {string} url - The URL to process
- * @returns {string} Complete command string
+ * @returns {Array} Array of {cmd, description} objects to try in sequence
  */
-function buildCommandWithCookies(baseUrl, url) {
-    console.log('\n[buildCommandWithCookies] Building command...');
-    console.log('[buildCommandWithCookies] Input URL:', url);
+function buildCommandsWithCookieStrategies(baseUrl, url) {
+    console.log('\n[buildCommands] Building command strategies...');
+    console.log('[buildCommands] Input URL:', url);
     
     // Ensure we have native path
     getNativeCookiePath();
     
-    console.log('[buildCommandWithCookies] Cookie path after conversion:', AUTH_CONFIG.cookieFilePath);
+    const strategies = [];
     
-    // Validate cookies file
+    // Strategy 1: No cookies at all (works for most public channels!)
+    const noCookiesCmd = baseUrl + ' "' + url + '"';
+    strategies.push({
+        cmd: noCookiesCmd,
+        description: 'No cookies (public access)',
+        type: 'none'
+    });
+    console.log('[commands] Strategy 1: No cookies (fastest, works for public channels)');
+    
+    // Strategy 2: Use cookies.txt if available and looks valid
     const cookiesValid = isCookiesFileValid();
-    console.log('[buildCommandWithCookies] Cookies file valid?', cookiesValid);
-    
-    if (cookiesValid) {
-        const cmd = baseUrl + ' --cookies "' + AUTH_CONFIG.cookieFilePath + '" "' + url + '"';
-        console.log('[buildCommandWithCookies] ✅ Using cookies.txt file mode');
-        console.log('[buildCommandWithCookies] Cookie path:', AUTH_CONFIG.cookieFilePath);
-        console.log('[buildCommandWithCookies] Full command length:', cmd.length, 'chars');
-        return cmd;
+    if (cookiesValid && fs.existsSync(AUTH_CONFIG.cookieFilePath)) {
+        const cookiesCmd = baseUrl + ' --cookies "' + AUTH_CONFIG.cookieFilePath + '" "' + url + '"';
+        strategies.push({
+            cmd: cookiesCmd,
+            description: 'cookies.txt file',
+            type: 'file'
+        });
+        console.log('[commands] Strategy 2: cookies.txt file');
+    } else {
+        console.log('[commands] Strategy 2: SKIPPED (cookies.txt invalid or missing)');
     }
     
-    // Fall back to browser-based cookie extraction
+    // Strategy 3: Browser-based extraction (may fail on Windows due to DPAPI)
     const browser = AUTH_CONFIG.browserName || 'edge';
-    const cmd = baseUrl + ' --cookies-from-browser ' + browser + ' "' + url + '"';
-    console.log('[buildCommandWithCookies] 🔄 Using browser fallback mode');
-    console.log('[buildCommandWithCookies] Browser:', browser);
-    console.log('[buildCommandWithCookies] Reason: cookies.txt not available or invalid');
-    console.log('[buildCommandWithCookies] Full command length:', cmd.length, 'chars');
+    const browserCmd = baseUrl + ' --cookies-from-browser ' + browser + ' "' + url + '"';
+    strategies.push({
+        cmd: browserCmd,
+        description: `Browser (${browser})`,
+        type: 'browser'
+    });
+    console.log('[commands] Strategy 3: Browser fallback (' + browser + ')');
     
-    return cmd;
+    console.log('[commands] Total strategies prepared:', strategies.length);
+    
+    return strategies;
+}
+
+/**
+ * Execute a command with automatic retry using different strategies
+ * @param {Array} strategies - Array of {cmd, description} from buildCommandsWithCookieStrategies
+ * @param {number} currentIndex - Current strategy index to try
+ * @param {Function} onSuccess - Callback on success(stdout)
+ * @param {Function} onError - Callback when all strategies fail(error)
+ */
+function executeWithRetry(strategies, currentIndex, onSuccess, onError) {
+    if (currentIndex >= strategies.length) {
+        onError(new Error('All cookie strategies failed'));
+        return;
+    }
+    
+    const strategy = strategies[currentIndex];
+    console.log('\n[executeWithRetry] Trying strategy', currentIndex + 1, '/', strategies.length + ':', strategy.description);
+    console.log('[executeWithRetry] Command:', strategy.cmd.substring(0, 150) + '...');
+    
+    const startTime = Date.now();
+    
+    exec(strategy.cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        
+        if (error) {
+            console.log('[executeWithRetry] ❌ Strategy', currentIndex + 1, 'failed in', elapsed, 's:', strategy.description);
+            
+            // Check if error is cookie-related (try next strategy)
+            const isCookieError = 
+                error.message.includes('invalid Netscape format') ||
+                error.message.includes('CookieLoadError') ||
+                error.message.includes('failed to load cookies') ||
+                error.message.includes('DPAPI') ||
+                error.message.includes('decrypt') ||
+                stderr.includes('invalid Netscape') ||
+                stderr.includes('DPAPI') ||
+                stderr.includes('decrypt');
+            
+            if (isCookieError && currentIndex < strategies.length - 1) {
+                console.log('[executeWithRetry] 🔄 Cookie-related error detected, trying next strategy...');
+                
+                // Show partial stderr (not full traceback)
+                if (stderr) {
+                    const firstLine = stderr.split('\n').find(l => l.trim().startsWith('ERROR:'));
+                    if (firstLine) {
+                        console.log('[executeWithRetry] Error hint:', firstLine.trim());
+                    }
+                }
+                
+                // Try next strategy
+                executeWithRetry(strategies, currentIndex + 1, onSuccess, onError);
+                return;
+            }
+            
+            // Non-cookie error or last strategy - fail completely
+            console.log('[executeWithRetry] ❌ All strategies exhausted or non-recoverable error');
+            if (stderr) {
+                console.log('[executeWithRetry] Final error (first 500 chars):', stderr.substring(0, 500));
+            }
+            onError(error);
+            return;
+        }
+        
+        // Success!
+        console.log('[executeWithRetry] ✅ Strategy', currentIndex + 1, 'succeeded in', elapsed, 's:', strategy.description);
+        console.log('[executeWithRetry] STDOUT length:', stdout ? stdout.length : 0, 'chars');
+        onSuccess(stdout, stderr);
+    });
+}
+
+/**
+ * Legacy function for backward compatibility - now uses multi-strategy approach
+ * @param {string} baseUrl - Base command
+ * @param {string} url - URL to fetch
+ * @returns {string} First strategy command (no cookies)
+ */
+function buildCommandWithCookies(baseUrl, url) {
+    // For backward compatibility, return no-cookies version
+    // Real logic now in executeWithRetry() with multiple strategies
+    return baseUrl + ' "' + url + '"';
 }
 
 
@@ -442,7 +537,7 @@ function getBestFormat(formats) {
 // CHANNEL FETCHING - WITH SMART COOKIE HANDLING
 // =============================================================================
 
-// Fetch channel info using yt-dlp - WITH FULL DEBUG LOGGING
+// Fetch channel info using yt-dlp - WITH MULTI-STRATEGY COOKIE RETRY
 function fetchChannelInfo(channelId, channelUrl) {
     return new Promise((resolve, reject) => {
         console.log('\n[fetchChannelInfo] Starting...');
@@ -455,102 +550,43 @@ function fetchChannelInfo(channelId, channelUrl) {
         
         console.log('[fetchChannelInfo] Base command built');
         
-        // Use smart cookie handling - tries cookies.txt, falls back to browser
-        const cmd = buildCommandWithCookies(baseCmd, channelUrl);
-        
-        console.log('[fetchChannelInfo] Final command:');
-        console.log('   ', cmd);
-        console.log('[fetchChannelInfo] Command length:', cmd.length, 'characters');
+        // Build all strategies (no cookies, cookies.txt, browser)
+        const strategies = buildCommandsWithCookieStrategies(baseCmd, channelUrl);
         
         const startTime = Date.now();
-        console.log('[fetchChannelInfo] Executing command at:', new Date().toISOString());
-
-        exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
-            const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-            console.log('\n[fetchChannelInfo] Command completed in', elapsed, 'seconds');
-            console.log('[fetchChannelInfo] Results:');
-            console.log('   - error:', error ? error.message : 'null');
-            console.log('   - stdout length:', stdout ? stdout.length : 0, 'chars');
-            console.log('   - stderr length:', stderr ? stderr.length : 0, 'chars');
-            
-            if (stderr && stderr.trim()) {
-                console.log('\n[fetchChannelInfo] STDERR output (first 2000 chars):');
-                console.log(stderr.substring(0, 2000));
-                if (stderr.length > 2000) {
-                    console.log('... [truncated, total', stderr.length, 'chars]');
-                }
-            }
-            
-            if (stdout && stdout.trim()) {
-                console.log('\n[fetchChannelInfo] STDOUT output (first 1500 chars):');
-                console.log(stdout.substring(0, 1500));
-                if (stdout.length > 1500) {
-                    console.log('... [truncated, total', stdout.length, 'chars]');
-                }
-            }
-            
-            if (error) {
-                console.log('\n[fetchChannelInfo] ❌ ERROR DETECTED:');
-                console.log('   - Error code:', error.code);
-                console.log('   - Error signal:', error.signal);
-                console.log('   - Error message:', error.message);
-                console.log('   - Killed:', error.killed);
+        console.log('[fetchChannelInfo] Starting multi-strategy execution at:', new Date().toISOString());
+        
+        // Execute with automatic retry on cookie errors
+        executeWithRetry(strategies, 0, 
+            // Success callback
+            (stdout, stderr) => {
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                console.log('\n[fetchChannelInfo] ✅ SUCCESS in', elapsed, 'seconds total');
                 
-                // If cookies.txt failed but we haven't tried browser yet, retry with browser
-                if (error.message.includes('invalid Netscape format') || 
-                    error.message.includes('CookieLoadError') ||
-                    error.message.includes('failed to load cookies') ||
-                    error.message.includes('invalid Netscape format')) {
-                    
-                    console.log('\n[fetchChannelInfo] 🔄 RETRYING WITH BROWSER COOKIES...');
-                    console.log('[fetchChannelInfo] Reason: Invalid cookies.txt detected');
-                    
-                    const browserCmd = baseCmd + ' --cookies-from-browser ' + AUTH_CONFIG.browserName + ' "' + channelUrl + '"';
-                    
-                    console.log('[fetchChannelInfo] Browser fallback command:');
-                    console.log('   ', browserCmd);
-                    
-                    exec(browserCmd, { maxBuffer: 50 * 1024 * 1024 }, (retryError, retryStdout, retryStderr) => {
-                        const retryElapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-                        console.log('\n[fetchChannelInfo] Browser fallback completed in', retryElapsed, 'seconds total');
-                        
-                        if (retryError) {
-                            console.log('[fetchChannelInfo] ❌ BROWSER FALLBACK ALSO FAILED:');
-                            console.log('   - Error:', retryError.message);
-                            
-                            if (retryStderr) {
-                                console.log('   - STDERR:', retryStderr.substring(0, 1000));
-                            }
-                            
-                            reject(new Error('Failed to fetch channel (browser fallback also failed): ' + retryError.message));
-                            return;
-                        }
-                        
-                        console.log('[fetchChannelInfo] ✅ BROWSER FALLBACK SUCCEEDED!');
-                        
-                        if (retryStdout) {
-                            console.log('[fetchChannelInfo] Browser stdout (first 1000 chars):');
-                            console.log(retryStdout.substring(0, 1000));
-                        }
-                        
-                        const videos = parseChannelOutput(retryStdout);
-                        console.log('[fetchChannelInfo] Parsed result:', videos.videos.length, 'videos,', videos.liveVideos.length, 'live');
-                        resolve(videos);
-                    });
-                    
-                    return;
+                if (stderr && stderr.trim()) {
+                    console.log('[fetchChannelInfo] Warnings (first 500 chars):', stderr.substring(0, 500));
                 }
                 
-                console.log('[fetchChannelInfo] Rejecting with error (no retry):');
+                if (stdout && stdout.trim()) {
+                    console.log('[fetchChannelInfo] STDOUT output (first 1000 chars):');
+                    console.log(stdout.substring(0, 1000));
+                    if (stdout.length > 1000) {
+                        console.log('... [truncated, total', stdout.length, 'chars]');
+                    }
+                }
+                
+                console.log('\n[fetchChannelInfo] Parsing output...');
+                const videos = parseChannelOutput(stdout);
+                console.log('[fetchChannelInfo] Parsed result:', videos.videos.length, 'videos,', videos.liveVideos.length, 'live');
+                resolve(videos);
+            },
+            // Error callback (all strategies failed)
+            (error) => {
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+                console.log('\n[fetchChannelInfo] ❌ ALL STRATEGIES FAILED after', elapsed, 'seconds');
                 reject(new Error('Failed to fetch channel: ' + error.message));
-                return;
             }
-
-            console.log('\n[fetchChannelInfo] ✅ SUCCESS - Parsing output...');
-            const videos = parseChannelOutput(stdout);
-            console.log('[fetchChannelInfo] Parsed result:', videos.videos.length, 'videos,', videos.liveVideos.length, 'live');
-            resolve(videos);
-        });
+        );
     });
 }
 
