@@ -1080,19 +1080,19 @@ app.post('/api/download', async (req, res) => {
             createdAt: new Date().toISOString()
         });
 
-        console.log('[Download] ✅ Job created, starting execution...');
+        console.log('[Download] ✅ Job created, starting SMART DOWNLOAD...');
         
-        // Start download asynchronously (don't await - return immediately)
+        // Start SMART DOWNLOAD asynchronously (analyze formats → pick lowest → download)
         setImmediate(async () => {
             try {
-                download.status = 'downloading';
+                download.status = 'analyzing';  // Show "analyzing" status first
                 download.startTime = Date.now();
                 
-                await executeDownload(
+                // Use SMART DOWNLOAD: analyzes formats, picks lowest quality, then downloads
+                await smartDownload(
                     downloadId,
                     videoUrl,
                     outputPath,
-                    format || 'best',
                     (progress) => {
                         download.progress = progress.percent;
                         download.downloaded = progress.downloaded;
@@ -1501,6 +1501,337 @@ app.delete('/api/channels/:id', (req, res) => {
     }
 });
 
+// =============================================================================
+// VIDEO FORMAT ANALYZER & SMART DOWNLOAD SYSTEM
+// =============================================================================
+
+/**
+ * Analyze available formats for a YouTube video
+ * Returns sorted list from lowest to highest quality
+ */
+function analyzeVideoFormats(videoUrl) {
+    return new Promise((resolve, reject) => {
+        console.log('\n[Format Analyzer] Starting analysis for:', videoUrl);
+        
+        // Build command to dump JSON format info (no cookies needed for format listing)
+        const cmd = 'yt-dlp --dump-json --no-check-certificate --list-formats "' + videoUrl + '"';
+        
+        console.log('[Format Analyzer] Command:', cmd);
+        
+        const startTime = Date.now();
+        
+        exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+            
+            if (error) {
+                console.log('[Format Analyzer] ❌ Error in', elapsed, 's:', error.message);
+                reject(error);
+                return;
+            }
+            
+            try {
+                // Parse the JSON output
+                const lines = stdout.trim().split('\n');
+                const formats = [];
+                let videoInfo = null;
+                
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    
+                    try {
+                        const data = JSON.parse(line);
+                        
+                        // First line is usually video info
+                        if (!videoInfo && data.id && data.title) {
+                            videoInfo = data;
+                            console.log('[Format Analyzer] Video:', data.title, '(' + data.id + ')');
+                        }
+                        
+                        // Format entries have format_id
+                        if (data.format_id) {
+                            formats.push({
+                                format_id: data.format_id,
+                                ext: data.ext,
+                                resolution: data.resolution || `${data.width || '?'}x${data.height || '?'}`,
+                                filesize: data.filesize || null,
+                                filesize_approx: data.filesize_approx || null,
+                                fps: data.fps || null,
+                                vcodec: data.vcodec || 'none',
+                                acodec: data.acodec || 'none',
+                                hasVideo: data.vcodec !== 'none',
+                                hasAudio: data.acodec !== 'none',
+                                quality: data.height || 0,
+                                width: data.width || 0,
+                                height: data.height || 0
+                            });
+                        }
+                    } catch (e) {
+                        // Skip malformed lines
+                    }
+                }
+                
+                // Sort by quality (lowest first)
+                const videoFormats = formats.filter(f => f.hasVideo).sort((a, b) => a.quality - b.quality);
+                
+                // Find lowest quality combined format (video+audio)
+                const lowestQuality = videoFormats.find(f => f.hasVideo && f.hasAudio) 
+                    || videoFormats.find(f => f.hasVideo)
+                    || formats[0];
+                
+                console.log('[Format Analyzer] ✅ Analysis complete in', elapsed, 's:');
+                console.log('   - Total formats:', formats.length);
+                console.log('   - Video formats:', videoFormats.length);
+                console.log('   - Lowest quality:', lowestQuality ? lowestQuality.format_id : 'N/A');
+                
+                resolve({
+                    videoInfo: videoInfo,
+                    allFormats: formats,
+                    videoFormats: videoFormats,
+                    recommendedFormat: lowestQuality,
+                    analysisTime: elapsed
+                });
+                
+            } catch (parseError) {
+                console.log('[Format Analyzer] ❌ Parse error:', parseError.message);
+                reject(parseError);
+            }
+        });
+    });
+}
+
+/**
+ * Smart download with automatic format selection (LOWEST QUALITY)
+ */
+function smartDownload(downloadId, videoUrl, outputPath, onProgress, onComplete, onError) {
+    return new Promise(async (resolve, reject) => {
+        console.log('\n[Smart Download] Starting smart download for:', videoUrl);
+        console.log('[Smart Download] Step 1: Analyzing formats...');
+        
+        try {
+            // Step 1: Analyze formats
+            const analysis = await analyzeVideoFormats(videoUrl);
+            
+            if (!analysis.recommendedFormat) {
+                throw new Error('No suitable format found');
+            }
+            
+            const selectedFormat = analysis.recommendedFormat.format_id;
+            console.log('[Smart Download] Step 2: Selected format:', selectedFormat);
+            console.log('   - Resolution:', analysis.recommendedFormat.resolution);
+            console.log('   - Codec:', analysis.recommendedFormat.vcodec + '/' + analysis.recommendedFormat.acodec);
+            if (analysis.recommendedFormat.filesize) {
+                console.log('   - Size:', Math.round(analysis.recommendedFormat.filesize / 1024 / 1024), 'MB');
+            }
+            
+            // Step 2: Download with selected format using multi-strategy cookie handling
+            console.log('[Smart Download] Step 3: Starting download...');
+            
+            const baseCmd = `yt-dlp --format "${selectedFormat}" --merge-output-format mp4 --no-check-certificate`;
+            const strategies = buildCommandsWithCookieStrategies(baseCmd + ' -o "' + outputPath.replace(/\.[^.]+$/, '') + '.%(ext)s"', videoUrl);
+            
+            executeWithRetry(strategies, 0,
+                // Success
+                (stdout, stderr) => {
+                    console.log('[Smart Download] ✅ Download complete!');
+                    onComplete(stdout);
+                    resolve(stdout);
+                },
+                // All strategies failed
+                (error) => {
+                    console.log('[Smart Download] ❌ Failed:', error.message);
+                    onError(error.message);
+                    reject(error);
+                }
+            );
+            
+        } catch (error) {
+            console.log('[Smart Download] ❌ Analysis failed:', error.message);
+            onError(error.message);
+            reject(error);
+        }
+    });
+}
+
+// =============================================================================
+// DOWNLOAD QUEUE MANAGEMENT
+// =============================================================================
+
+// In-memory download queue
+const downloadQueue = [];
+
+// GET /api/download-queue - List all downloads (frontend polls this!)
+app.get('/api/download-queue', (req, res) => {
+    console.log('\n[Queue] GET /api/download-queue requested');
+    
+    const allDownloads = downloadManager.getAll();
+    const activeDownloads = allDownloads.filter(d => d.status === 'downloading' || d.status === 'queued');
+    const completedDownloads = allDownloads.filter(d => d.status === 'completed');
+    const failedDownloads = allDownloads.filter(d => d.status === 'error' || d.status === 'cancelled');
+    
+    console.log('[Queue] Status:');
+    console.log('   - Active:', activeDownloads.length);
+    console.log('   - Completed:', completedDownloads.length);
+    console.log('   - Failed:', failedDownloads.length);
+    
+    res.json({
+        success: true,
+        queue: {
+            active: activeDownloads,
+            completed: completedDownloads.slice(-20), // Last 20 completed
+            failed: failedDownloads.slice(-10)       // Last 10 failed
+        },
+        stats: {
+            total: allDownloads.length,
+            active: activeDownloads.length,
+            completed: completedDownloads.length,
+            failed: failedDownloads.length
+        }
+    });
+});
+
+// DELETE /api/download-queue - Clear completed/failed downloads from display
+app.delete('/api/download-queue', (req, res) => {
+    console.log('\n[Queue] DELETE /api/download-queue - Clearing queue');
+    
+    const allDownloads = downloadManager.getAll();
+    let cleared = 0;
+    
+    allDownloads.forEach(download => {
+        if (download.status === 'completed' || download.status === 'error' || download.status === 'cancelled') {
+            downloadManager.remove(download.id);
+            cleared++;
+        }
+    });
+    
+    console.log('[Queue] ✅ Cleared', cleared, 'downloads');
+    
+    res.json({
+        success: true,
+        message: `Cleared ${cleared} downloads`,
+        cleared: cleared
+    });
+});
+
+// POST /api/download/batch - Batch download multiple videos with format analysis
+app.post('/api/download/batch', async (req, res) => {
+    console.log('\n' + '='.repeat(80));
+    console.log('📦 [Batch Download] POST /api/download/batch');
+    console.log('='.repeat(80));
+    
+    try {
+        const { videos, channelId, format, quality } = req.body;
+        
+        if (!videos || !Array.isArray(videos) || videos.length === 0) {
+            return res.status(400).json({
+                success: false,
+                error: 'Videos array required'
+            });
+        }
+
+        console.log('[Batch Download] Queueing', videos.length, 'videos for download');
+        console.log('[Batch Download] Channel ID:', channelId || 'N/A');
+        console.log('[Batch Download] Quality preference:', quality || 'auto (lowest)');
+        
+        const jobIds = [];
+        const errors = [];
+        
+        for (let i = 0; i < videos.length; i++) {
+            const video = videos[i];
+            const videoUrl = video.url || (video.id ? `https://www.youtube.com/watch?v=${video.id}` : null);
+            
+            if (!videoUrl) {
+                errors.push({ index: i, video: video, error: 'No URL provided' });
+                continue;
+            }
+            
+            const downloadId = uuidv4();
+            const safeTitle = (video.title || `video_${i}`).replace(/[^a-zA-Z0-9._-]/g, '_').substring(0, 50);
+            const outputFilename = `${safeTitle}.mp4`;
+            const outputPath = path.join(DOWNLOADS_DIR, outputFilename);
+            
+            const download = downloadManager.add({
+                id: downloadId,
+                url: videoUrl,
+                videoId: video.id,
+                title: video.title,
+                channelId: channelId,
+                filename: outputFilename,
+                outputPath: outputPath,
+                status: 'queued',
+                progress: 0,
+                batchIndex: i,
+                totalInBatch: videos.length,
+                createdAt: new Date().toISOString()
+            });
+            
+            jobIds.push(downloadId);
+            
+            // Start download asynchronously with delay to avoid overwhelming yt-dlp
+            setTimeout(async () => {
+                try {
+                    download.status = 'analyzing';
+                    download.startTime = Date.now();
+                    
+                    console.log(`\n[Batch ${i+1}/${videos.length}] Starting:`, video.title?.substring(0, 40));
+                    
+                    // Use smart download (analyze → pick lowest quality → download)
+                    await smartDownload(
+                        downloadId,
+                        videoUrl,
+                        outputPath,
+                        (progress) => {
+                            download.progress = progress.percent;
+                            download.status = 'downloading';
+                            
+                            // Log every 25%
+                            if (progress.percent % 25 < 5 || progress.percent === 100) {
+                                console.log(`  [${downloadId.substring(0,6)}] ${progress.percent}%`);
+                            }
+                        },
+                        (result) => {
+                            download.status = 'completed';
+                            download.endTime = Date.now();
+                            console.log(`  [${downloadId.substring(0,6)}] ✅ Complete!`);
+                        },
+                        (errorMsg) => {
+                            download.status = 'error';
+                            download.error = errorMsg;
+                            download.endTime = Date.now();
+                            console.log(`  [${downloadId.substring(0,6)}] ❌ Error:`, errorMsg);
+                        }
+                    );
+                    
+                } catch (err) {
+                    download.status = 'error';
+                    download.error = err.message;
+                    download.endTime = Date.now();
+                }
+            }, i * 2000); // 2 second delay between each download start
+        }
+        
+        console.log('[Batch Download] ✅ Queued', jobIds.length, '/', videos.length, 'jobs');
+        console.log('[Batch Download] Errors:', errors.length);
+        console.log('='.repeat(80) + '\n');
+        
+        res.status(202).json({
+            success: true,
+            message: `Queued ${jobIds.length} downloads`,
+            jobsCreated: jobIds.length,
+            totalRequested: videos.length,
+            errors: errors,
+            jobIds: jobIds,
+            estimatedTime: `${Math.ceil(videos.length * 15 / 60)} minutes` // Rough estimate
+        });
+
+    } catch (error) {
+        console.log('\n❌ [Batch Download] ERROR:', error.message);
+        res.status(500).json({
+            success: false,
+            error: 'Batch download failed: ' + error.message
+        });
+    }
+});
+
 // POST /api/channels/:id/check - Check for new videos on a channel
 app.post('/api/channels/:id/check', async (req, res) => {
     const { id } = req.params;
@@ -1622,8 +1953,10 @@ app.use((req, res) => {
     console.log('   GET  /api/download/:id');       // Legacy status
     console.log('   POST /api/download/:id/cancel');
     console.log('   GET  /api/downloads');
-    console.log('   POST /api/download/batch');
+    console.log('   POST /api/download/batch');     // ← Batch with format analysis!
     console.log('   GET  /api/download/list');
+    console.log('   GET  /api/download-queue');      // ← Queue status (frontend polls!)
+    console.log('   DELETE /api/download-queue');    // ← Clear queue
     console.log('   GET  /api/system/status');
     console.log('');
     
@@ -1636,8 +1969,9 @@ app.use((req, res) => {
             '/api/channels',
             '/api/channel/info',
             '/api/video/info',
-            '/api/download',              // ← ADD THIS!
+            '/api/download',              // ← MAIN DOWNLOAD!
             '/api/download/start',
+            '/api/download/batch',         // ← BATCH DOWNLOAD!
             '/api/download/start',
             '/api/downloads',
             '/api/system/status'
