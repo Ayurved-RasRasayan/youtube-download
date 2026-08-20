@@ -1823,148 +1823,311 @@ app.delete('/api/channels/:id', (req, res) => {
  * Analyze available formats for a YouTube video
  * Returns sorted list from lowest to highest quality
  */
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════╗
+ * ║  FORMAT ANALYZER - Smart Format Detection & Lowest Quality Selection      ║
+ * ╚═══════════════════════════════════════════════════════════════════════════╝
+ * 
+ * 🔧 FEATURES:
+ *   ✅ Scans EACH video before download using yt-dlp --list-formats
+ *   ✅ Parses available formats and selects LOWEST quality
+ *   ✅ Shows selected format in UI for each download
+ *   ✅ Falls back gracefully if format detection fails
+ *   ✅ Displays format info: resolution, filesize, codec, extension
+ */
+
+/**
+ * Analyze available formats for a YouTube video using TEXT PARSING (more reliable)
+ * Returns the best (lowest quality) format ID with full details
+ */
 function analyzeVideoFormats(videoUrl) {
     return new Promise((resolve, reject) => {
-        console.log('\n[Format Analyzer] Starting MP4 format analysis for:', videoUrl);
+        console.log('\n[Format Analyzer] Starting analysis for:', videoUrl);
+        console.log('[Format Analyzer] Using text-based parsing (reliable method)');
         
-        // Build command to dump JSON format info (no cookies needed for format listing)
-        const cmd = 'yt-dlp --dump-json --no-check-certificate --list-formats "' + videoUrl + '"';
+        // Command to list all available formats in TEXT format (more reliable than JSON)
+        const cmd = 'yt-dlp --list-formats "' + videoUrl + '" 2>/dev/null';
         
         console.log('[Format Analyzer] Command:', cmd);
         
         const startTime = Date.now();
         
-        exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        exec(cmd, { maxBuffer: 50 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
             const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
             
             if (error) {
                 console.log('[Format Analyzer] ❌ Error in', elapsed, 's:', error.message);
-                reject(error);
-                return;
+                // Return default low format on error - DON'T fail the download!
+                return resolve({
+                    success: true,
+                    formatId: 'worstvideo+worstaudio/worst',
+                    formatString: '-f "worstvideo+worstaudio/worstvideo/worstaudio/worst/best"',
+                    resolution: 'Auto (Low)',
+                    fileSize: 'Unknown',
+                    codec: 'auto',
+                    ext: 'mp4',
+                    note: 'Format detection failed, using safest fallback',
+                    analysisTime: elapsed,
+                    fallbackUsed: true
+                });
             }
             
             try {
-                // Parse the JSON output
-                const lines = stdout.trim().split('\n');
-                const formats = [];
-                let videoInfo = null;
+                // Parse the TEXT output (more reliable than JSON!)
+                const lines = stdout.split('\n').filter(line => 
+                    line.trim() && !line.startsWith('[info]') && !line.startsWith('[warning]')
+                );
                 
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    
-                    try {
-                        const data = JSON.parse(line);
-                        
-                        // First line is usually video info
-                        if (!videoInfo && data.id && data.title) {
-                            videoInfo = data;
-                            console.log('[Format Analyzer] Video:', data.title, '(' + data.id + ')');
-                        }
-                        
-                        // Format entries have format_id
-                        if (data.format_id) {
-                            // ⭐ FILTER: Only include formats compatible with MP4 output
-                            // MP4 supports: mp4, m4a, webm (can be remuxed), and combined formats
-                            const ext = (data.ext || '').toLowerCase();
-                            const vcodec = data.vcodec || 'none';
-                            const acodec = data.acodec || 'none';
-                            
-                            // Check if this format can be used for MP4 output
-                            const isMp4Compatible = 
-                                ext === 'mp4' ||           // Native MP4
-                                ext === 'm4a' ||           // Audio-only MP4 container
-                                ext === 'webm' ||          // Can be remuxed to MP4
-                                data.format_id.includes('+') ||  // Combined format
-                                (vcodec !== 'none' && (vcodec.includes('avc') || vcodec.includes('h264') || vcodec.includes('vp9') || vcodec.includes('av01'))) ||
-                                (acodec !== 'none' && (acodec.includes('aac') || acodec.includes('mp3') || acodec.includes('opus') || acodec.includes('vorbis')));
-                            
-                            if (!isMp4Compatible) {
-                                console.log(`[Format Analyzer] Skipping non-MP4 format ${data.format_id} (${ext})`);
-                                continue;
-                            }
-                            
-                            formats.push({
-                                format_id: data.format_id,
-                                ext: ext,
-                                resolution: data.resolution || `${data.width || '?'}x${data.height || '?'}`,
-                                filesize: data.filesize || null,
-                                filesize_approx: data.filesize_approx || null,
-                                fps: data.fps || null,
-                                vcodec: vcodec,
-                                acodec: acodec,
-                                hasVideo: vcodec !== 'none',
-                                hasAudio: acodec !== 'none',
-                                quality: data.height || 0,
-                                width: data.width || 0,
-                                height: data.height || 0,
-                                mp4Compatible: true
-                            });
-                        }
-                    } catch (e) {
-                        // Skip malformed lines
-                    }
+                // Find format lines (they contain format code, extension, resolution)
+                const formatLines = lines.filter(line => 
+                    /\d+\s+(audio|video|mp4|webm|m4a)/i.test(line) || 
+                    line.includes('audio only') || 
+                    line.includes('video only')
+                );
+                
+                console.log('[Format Analyzer] Found', formatLines.length, 'format lines');
+                
+                if (formatLines.length === 0) {
+                    console.log('[Format Analyzer] ⚠️ No formats parsed, using worst');
+                    return resolve({
+                        success: true,
+                        formatId: 'worst',
+                        formatString: '-f "worst"',
+                        resolution: 'Auto',
+                        fileSize: 'Unknown',
+                        codec: 'auto',
+                        ext: 'mp4',
+                        note: 'No formats parsed, using worst',
+                        analysisTime: elapsed,
+                        fallbackUsed: true
+                    });
                 }
                 
-                // Separate into categories for better selection
-                const videoFormats = formats.filter(f => f.hasVideo).sort((a, b) => a.quality - b.quality);
+                // Parse formats to find the WORST (lowest quality) video+audio combo
+                let worstVideoFormat = null;
+                let worstAudioFormat = null;
+                let worstCombinedFormat = null;
+                let allParsedFormats = [];
                 
-                // Priority order for MP4 output:
-                // 1. Combined format (video+audio already merged) - lowest quality
-                // 2. Video-only format (will merge audio separately) - lowest quality
-                const combinedFormats = videoFormats.filter(f => f.hasVideo && f.hasAudio);
-                const videoOnlyFormats = videoFormats.filter(f => f.hasVideo && !f.hasAudio);
+                // Analyze each format line
+                formatLines.forEach((line, index) => {
+                    // Extract format ID (usually first number/code)
+                    const parts = line.trim().split(/\s{2,}/);
+                    if (parts.length < 2) return;
+                    
+                    const formatCode = parts[0].trim();
+                    const extension = parts[1] ? parts[1].trim() : 'unknown';
+                    const resolution = parts[2] ? parts[2].trim() : 'unknown';
+                    
+                    // Check if this is audio-only
+                    const isAudioOnly = line.toLowerCase().includes('audio only') || 
+                                       resolution === 'audio only';
+                    
+                    // Check if this is video-only or combined
+                    const isVideoOnly = line.toLowerCase().includes('video only');
+                    
+                    // Parse resolution to number for comparison (lower = worse quality = what we want)
+                    let height = Infinity;
+                    if (resolution.match(/^(\d+)x(\d+)$/)) {
+                        height = parseInt(resolution.split('x')[1]);
+                    } else if (resolution.match(/^(\d+)p$/)) {
+                        height = parseInt(resolution);
+                    } else if (resolution.match(/^(\d+)x/)) {
+                        height = parseInt(resolution.split('x')[1]);
+                    }
+                    
+                    const formatInfo = {
+                        code: formatCode,
+                        ext: extension,
+                        resolution: resolution,
+                        height: height,
+                        isAudioOnly: isAudioOnly,
+                        isVideoOnly: isVideoOnly,
+                        fullLine: line,
+                        lineNumber: index + 1
+                    };
+                    
+                    allParsedFormats.push(formatInfo);
+                    
+                    // Track worst (lowest quality) of each type
+                    if (isAudioOnly && (!worstAudioFormat || height < worstAudioFormat.height)) {
+                        worstAudioFormat = formatInfo;
+                    } else if (!isAudioOnly) {
+                        // Video or combined format
+                        if (!worstVideoFormat || height < worstVideoFormat.height) {
+                            worstVideoFormat = formatInfo;
+                            // If not video-only, it might be combined
+                            if (!isVideoOnly) {
+                                worstCombinedFormat = formatInfo;
+                            }
+                        }
+                    }
+                });
                 
-                // Select lowest quality from preferred options
-                let recommendedFormat = combinedFormats.sort((a, b) => a.quality - b.quality)[0] 
-                                      || videoOnlyFormats.sort((a, b) => a.quality - b.quality)[0]
-                                      || formats[0];
+                // Determine best format string to use
+                let selectedFormat;
+                let formatDescription;
+                
+                // Priority order for selection:
+                // 1. Combined format (video+audio together) - BEST OPTION
+                // 2. Need to merge video + audio separately
+                // 3. Video only (no audio merged)
+                // 4. Ultimate fallback to generic worst
+                
+                if (worstCombinedFormat && !worstCombinedFormat.isVideoOnly) {
+                    // We found a combined format (video+audio together) - BEST OPTION!
+                    selectedFormat = {
+                        success: true,
+                        formatId: worstCombinedFormat.code,
+                        formatString: '-f "' + worstCombinedFormat.code + '"',
+                        resolution: worstCombinedFormat.resolution,
+                        fileSize: '~' + estimateFileSize(worstCombinedFormat.height),
+                        codec: worstCombinedFormat.ext,
+                        ext: worstCombinedFormat.ext,
+                        note: 'Combined format (video+audio)',
+                        rawInfo: worstCombinedFormat.fullLine,
+                        analysisTime: elapsed,
+                        fallbackUsed: false,
+                        allFormats: allParsedFormats
+                    };
+                    formatDescription = '✅ Combined format found';
+                } else if (worstVideoFormat && worstAudioFormat) {
+                    // Need to merge video + audio
+                    selectedFormat = {
+                        success: true,
+                        formatId: worstVideoFormat.code + '+' + worstAudioFormat.code,
+                        formatString: '-f "' + worstVideoFormat.code + '+' + worstAudioFormat.code + '"',
+                        resolution: worstVideoFormat.resolution,
+                        fileSize: '~' + estimateFileSize(worstVideoFormat.height),
+                        codec: worstVideoFormat.ext + '+' + worstAudioFormat.ext,
+                        ext: 'mp4', // Merged output will be MP4
+                        note: 'Merged: video(' + worstVideoFormat.resolution + ') + audio',
+                        rawVideoInfo: worstVideoFormat.fullLine,
+                        rawAudioInfo: worstAudioFormat.fullLine,
+                        analysisTime: elapsed,
+                        fallbackUsed: false,
+                        allFormats: allParsedFormats
+                    };
+                    formatDescription = '🔀 Video + Audio merge needed';
+                } else if (worstVideoFormat) {
+                    // Only video format available
+                    selectedFormat = {
+                        success: true,
+                        formatId: worstVideoFormat.code,
+                        formatString: '-f "' + worstVideoFormat.code + '"',
+                        resolution: worstVideoFormat.resolution,
+                        fileSize: '~' + estimateFileSize(worstVideoFormat.height),
+                        codec: worstVideoFormat.ext,
+                        ext: worstVideoFormat.ext,
+                        note: 'Video only (no audio merged)',
+                        rawInfo: worstVideoFormat.fullLine,
+                        analysisTime: elapsed,
+                        fallbackUsed: false,
+                        allFormats: allParsedFormats
+                    };
+                    formatDescription = '🎥 Video only format';
+                } else {
+                    // Fallback to generic worst
+                    selectedFormat = {
+                        success: true,
+                        formatId: 'worst',
+                        formatString: '-f "worstvideo+worstaudio/worstvideo/worstaudio/worst/best"',
+                        resolution: 'Auto (Lowest)',
+                        fileSize: 'Unknown',
+                        codec: 'auto',
+                        ext: 'mp4',
+                        note: 'Using fallback: worst quality with multiple fallbacks',
+                        analysisTime: elapsed,
+                        fallbackUsed: true,
+                        allFormats: allParsedFormats
+                    };
+                    formatDescription = '⚠️ Using safe fallback';
+                }
                 
                 console.log('\n[Format Analyzer] ✅ Analysis complete in', elapsed, 's:');
-                console.log('   📊 Total MP4-compatible formats:', formats.length);
-                console.log('   🎬 Video formats:', videoFormats.length);
-                console.log('   🔀 Combined (video+audio):', combinedFormats.length);
-                console.log('   🎥 Video-only:', videoOnlyFormats.length);
+                console.log('   📊 Total formats scanned:', formatLines.length);
+                console.log('   🎯 Selection:', formatDescription);
                 console.log('');
-                console.log('   📋 Available MP4 formats (sorted by quality):');
+                console.log('   📋 Selected Format Details:');
+                console.log('      Format ID:', selectedFormat.formatId);
+                console.log('      Resolution:', selectedFormat.resolution);
+                console.log('      File Size:', selectedFormat.fileSize);
+                console.log('      Codec:', selectedFormat.codec);
+                console.log('      Extension:', selectedFormat.ext);
+                console.log('      Note:', selectedFormat.note);
                 
-                // Log all available formats for transparency
-                const allSorted = [...formats].sort((a, b) => a.quality - b.quality || a.filesize - b.filesize);
-                allSorted.slice(0, 10).forEach((f, i) => {
-                    const size = f.filesize ? Math.round(f.filesize / 1024 / 1024) + 'MB' : 
-                                 f.filesize_approx ? '~' + Math.round(f.filesize_approx / 1024 / 1024) + 'MB' : 'unknown';
-                    console.log(`      ${i + 1}. ${f.format_id.padEnd(12)} | ${f.resolution.padEnd(12)} | ${f.vcodec.padEnd(15)} | ${f.acodec.padEnd(10)} | ${size}`);
-                });
-                if (allSorted.length > 10) {
-                    console.log(`      ... and ${allSorted.length - 10} more formats`);
-                }
-                console.log('');
-                console.log('   ✅ Recommended (lowest quality):', recommendedFormat ? recommendedFormat.format_id : 'N/A');
-                if (recommendedFormat) {
-                    console.log('      Resolution:', recommendedFormat.resolution);
-                    console.log('      Codecs:', recommendedFormat.vcodec + '/' + recommendedFormat.acodec);
-                    if (recommendedFormat.filesize || recommendedFormat.filesize_approx) {
-                        const size = recommendedFormat.filesize || recommendedFormat.filesize_approx;
-                        console.log('      Size:', Math.round(size / 1024 / 1024), 'MB');
+                if (allParsedFormats.length > 0) {
+                    console.log('');
+                    console.log('   📋 All Available Formats (sorted by quality):');
+                    const sortedByQuality = [...allParsedFormats].sort((a, b) => a.height - b.height);
+                    sortedByQuality.slice(0, 8).forEach((f, i) => {
+                        const type = f.isAudioOnly ? '🔊' : (f.isVideoOnly ? '🎥' : '🎬');
+                        console.log(`      ${i + 1}. ${type} ${f.code.padEnd(8)} | ${f.resolution.padEnd(12)} | ${f.ext.padEnd(5)} | ~${estimateFileSize(f.height)}`);
+                    });
+                    if (sortedByQuality.length > 8) {
+                        console.log(`      ... and ${sortedByQuality.length - 8} more formats`);
                     }
                 }
                 
-                resolve({
-                    videoInfo: videoInfo,
-                    allFormats: formats,
-                    videoFormats: videoFormats,
-                    combinedFormats: combinedFormats,
-                    videoOnlyFormats: videoOnlyFormats,
-                    recommendedFormat: recommendedFormat,
-                    analysisTime: elapsed
-                });
+                resolve(selectedFormat);
                 
             } catch (parseError) {
-                console.log('[Format Analyzer] ❌ Parse error:', parseError.message);
-                reject(parseError);
+                console.error('[Format Analyzer] ❌ Parse error:', parseError.message);
+                // Return safe fallback on parse error
+                resolve({
+                    success: true,
+                    formatId: 'worst',
+                    formatString: '-f "worst"',
+                    resolution: 'Parse Error',
+                    fileSize: 'Unknown',
+                    codec: 'auto',
+                    ext: 'mp4',
+                    note: 'Parse error, using worst',
+                    analysisTime: elapsed,
+                    fallbackUsed: true
+                });
             }
         });
     });
 }
+
+/**
+ * Estimate file size based on resolution (very rough estimate)
+ */
+function estimateFileSize(height) {
+    if (height <= 240) return '3-8 MB';
+    if (height <= 360) return '5-15 MB';
+    if (height <= 480) return '10-25 MB';
+    if (height <= 720) return '20-50 MB';
+    if (height <= 1080) return '40-100 MB';
+    return '100+ MB';
+}
+
+// ============================================
+// API ENDPOINT: Get video formats manually
+// ============================================
+app.get('/api/video/:videoId/formats', (req, res) => {
+    const videoId = req.params.videoId;
+    const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    
+    console.log('\n[API] 📊 Manual format request for video:', videoId);
+    
+    analyzeVideoFormats(videoUrl)
+        .then(formatInfo => {
+            res.json({
+                success: true,
+                videoId: videoId,
+                formatInfo: formatInfo,
+                message: `Format analysis complete. Recommended: ${formatInfo.formatId || 'worst'}`
+            });
+        })
+        .catch(error => {
+            res.status(500).json({ 
+                success: false, 
+                error: 'Failed to analyze formats: ' + error.message 
+            });
+        });
+});
 
 /**
  * Smart download with automatic format selection (LOWEST QUALITY)
@@ -1976,19 +2139,38 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
         console.log('[Smart Download] Step 1: Analyzing formats...');
         
         try {
-            // Step 1: Analyze formats
+            // Step 1: Analyze formats using NEW text-parsing analyzer
             const analysis = await analyzeVideoFormats(videoUrl);
             
-            if (!analysis.recommendedFormat) {
-                throw new Error('No suitable format found');
+            // New analyzer always returns a result (never fails!)
+            // It includes fallback formats if detection fails
+            const selectedFormatId = analysis.formatId || 'worst';
+            const formatString = analysis.formatString || `-f "${selectedFormatId}"`;
+            
+            console.log('[Smart Download] Step 2: Format analysis complete!');
+            console.log('   📺 Format ID:', selectedFormatId);
+            console.log('   📐 Resolution:', analysis.resolution);
+            console.log('   💾 Est. Size:', analysis.fileSize);
+            console.log('   🎵 Codec:', analysis.codec);
+            console.log('   📝 Note:', analysis.note);
+            if (analysis.fallbackUsed) {
+                console.log('   ⚠️ Used fallback format');
             }
             
-            const selectedFormat = analysis.recommendedFormat.format_id;
-            console.log('[Smart Download] Step 2: Selected format:', selectedFormat);
-            console.log('   - Resolution:', analysis.recommendedFormat.resolution);
-            console.log('   - Codec:', analysis.recommendedFormat.vcodec + '/' + analysis.recommendedFormat.acodec);
-            if (analysis.recommendedFormat.filesize) {
-                console.log('   - Size:', Math.round(analysis.recommendedFormat.filesize / 1024 / 1024), 'MB');
+            // Store format info in download object for UI display
+            if (downloadObj) {
+                downloadObj.formatInfo = {
+                    resolution: analysis.resolution,
+                    formatId: selectedFormatId,
+                    fileSize: analysis.fileSize,
+                    codec: analysis.codec,
+                    ext: analysis.ext,
+                    note: analysis.note,
+                    fallbackUsed: analysis.fallbackUsed,
+                    status: 'analyzed'
+                };
+                downloadObj.selectedResolution = analysis.resolution;
+                downloadObj.estimatedSize = analysis.fileSize;
             }
             
             // ⭐ CRITICAL FIX: Update status to DOWNLOADING before starting download
@@ -1996,28 +2178,56 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
             if (downloadObj) {
                 downloadObj.status = 'downloading';
                 downloadObj.progress = 0;
+                if (downloadObj.formatInfo) {
+                    downloadObj.formatInfo.status = 'downloading';
+                }
                 console.log('[Smart Download] ✅ Status updated to: downloading');
             }
             
-            // Step 3: Download with selected format using spawn() for REAL-TIME progress
+            // Step 3: Download with selected format using REAL-TIME progress
             const outputTemplate = outputPath.replace(/\.[^.]+$/, '') + '.%(ext)s';
-            const baseCmd = `yt-dlp --format "${selectedFormat}" --merge-output-format mp4 --no-check-certificate --newline -o "${outputTemplate}"`;
+            
+            // Build command with analyzed format - use formatString if available, otherwise construct it
+            let baseCmd;
+            if (analysis.formatString && !analysis.fallbackUsed) {
+                // Use the exact format string from analysis (most reliable)
+                baseCmd = `yt-dlp ${formatString} --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+            } else {
+                // Use fallback or constructed format
+                baseCmd = `yt-dlp --format "${selectedFormatId}" --merge-output-format mp4 --no-check-certificate --newline --ignore-no-formats-error --retries 5 --fragment-retries 10 --force-ipv4 -o "${outputTemplate}"`;
+            }
+            
+            // Add reliability flags for better downloads
+            if (!baseCmd.includes('--format-sort')) {
+                // Add format sort as additional safety net (prefers smallest files)
+                baseCmd = baseCmd.replace('yt-dlp ', 'yt-dlp --format-sort "size:asc,res:240,vcodec:h264" ');
+            }
+            
+            console.log('[Smart Download] Command template:', baseCmd.substring(0, 100) + '...');
+            
             const strategies = buildCommandsWithCookieStrategies(baseCmd, videoUrl);
             
-            // Use new executeWithProgress function that supports real-time progress
+            // Use executeWithProgress for REAL-TIME progress tracking
             executeWithProgress(strategies, 0, downloadObj, onProgress,
-                // Success
+                // Success callback
                 (stdout, stderr) => {
                     console.log('[Smart Download] ✅ Download complete!');
                     if (downloadObj) {
                         downloadObj.progress = 100;
+                        if (downloadObj.formatInfo) {
+                            downloadObj.formatInfo.status = 'completed';
+                        }
                     }
                     onComplete(stdout);
                     resolve(stdout);
                 },
-                // All strategies failed
+                // Error callback (all strategies failed)
                 (error) => {
                     console.log('[Smart Download] ❌ Failed:', error.message);
+                    if (downloadObj && downloadObj.formatInfo) {
+                        downloadObj.formatInfo.status = 'error';
+                        downloadObj.formatInfo.error = error.message;
+                    }
                     onError(error.message);
                     reject(error);
                 }
@@ -2025,6 +2235,10 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
             
         } catch (error) {
             console.log('[Smart Download] ❌ Analysis failed:', error.message);
+            if (downloadObj && downloadObj.formatInfo) {
+                downloadObj.formatInfo.status = 'error';
+                downloadObj.formatInfo.error = error.message;
+            }
             onError(error.message);
             reject(error);
         }
