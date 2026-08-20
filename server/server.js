@@ -311,6 +311,117 @@ function executeWithRetry(strategies, currentIndex, onSuccess, onError) {
 }
 
 /**
+ * ⭐ NEW: Execute with REAL-TIME progress tracking using spawn()
+ * Parses yt-dlp progress output and calls onProgress callback
+ * Supports multi-strategy cookie fallback like executeWithRetry
+ */
+function executeWithProgress(strategies, currentIndex, downloadObj, onProgress, onSuccess, onError) {
+    if (currentIndex >= strategies.length) {
+        onError(new Error('All cookie strategies failed'));
+        return;
+    }
+    
+    const strategy = strategies[currentIndex];
+    console.log('\n[executeWithProgress] Trying strategy', currentIndex + 1, '/', strategies.length + ':', strategy.description);
+    console.log('[executeWithProgress] Command:', strategy.cmd.substring(0, 150), '...');
+    
+    const startTime = Date.now();
+    
+    // Use shell:true for Windows compatibility (finds yt-dlp in PATH)
+    const childProcess = exec(strategy.cmd, { 
+        maxBuffer: 50 * 1024 * 1024,
+        windowsHide: true 
+    }, (error, stdout, stderr) => {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
+        
+        if (error) {
+            console.log('[executeWithProgress] ❌ Strategy', currentIndex + 1, 'failed in', elapsed, 's');
+            
+            // Check if error is cookie-related (try next strategy)
+            const isCookieError = 
+                error.message.includes('invalid Netscape format') ||
+                error.message.includes('CookieLoadError') ||
+                error.message.includes('failed to load cookies') ||
+                error.message.includes('DPAPI') ||
+                error.message.includes('decrypt') ||
+                (stderr && stderr.includes('invalid Netscape')) ||
+                (stderr && stderr.includes('DPAPI')) ||
+                (stderr && stderr.includes('decrypt'));
+            
+            if (isCookieError && currentIndex < strategies.length - 1) {
+                console.log('[executeWithProgress] 🔄 Cookie-related error detected, trying next strategy...');
+                executeWithProgress(strategies, currentIndex + 1, downloadObj, onProgress, onSuccess, onError);
+                return;
+            }
+            
+            // Non-cookie error or last strategy - fail completely
+            console.log('[executeWithProgress] ❌ All strategies exhausted');
+            if (stderr) {
+                console.log('[executeWithProgress] Error (first 300 chars):', stderr.substring(0, 300));
+            }
+            onError(new Error(stderr.substring(0, 500) || error.message));
+            return;
+        }
+        
+        // Success!
+        console.log('[executeWithProgress] ✅ Strategy', currentIndex + 1, 'completed in', elapsed, 's');
+        console.log('[executeWithProgress] Output length:', stdout ? stdout.length : 0, 'chars');
+        
+        // Parse final output for any progress info
+        if (stdout && onProgress) {
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+                const match = line.match(/\[download\]\s+100%.*of\s+([\d.]+\w+)/);
+                if (match) {
+                    onProgress({ percent: 100, downloaded: match[1], total: match[1], speed: 'complete' });
+                    break;
+                }
+            }
+        }
+        
+        onSuccess(stdout, stderr);
+    });
+    
+    // ⭐ REAL-TIME PROGRESS PARSING from stdout
+    // This is the key fix - we parse progress as it happens!
+    if (childProcess.stdout) {
+        childProcess.stdout.on('data', (data) => {
+            const output = data.toString();
+            
+            // Parse yt-dlp progress lines
+            // Format: [download]  15.2% of 25.50MiB at 1.20MiB/s ETA 00:08
+            const lines = output.split('\n');
+            for (const line of lines) {
+                const progressMatch = line.match(/\[download\]\s+(\d+\.?\d*)%\s+of\s+(\d+\.?\d*\w+)/);
+                
+                if (progressMatch && onProgress) {
+                    const percent = parseFloat(progressMatch[1]);
+                    const totalStr = progressMatch[2];
+                    const speedMatch = line.match(/at\s+([\d.]+\w+\/s)/);
+                    
+                    // Update download object with real-time progress
+                    if (downloadObj) {
+                        downloadObj.progress = Math.round(percent);
+                        downloadObj.total = totalStr;
+                        if (speedMatch) {
+                            downloadObj.speed = speedMatch[1];
+                        }
+                    }
+                    
+                    // Call the progress callback
+                    onProgress({
+                        percent: Math.round(percent),
+                        downloaded: 'unknown',
+                        total: totalStr,
+                        speed: speedMatch ? speedMatch[1] : 'unknown'
+                    });
+                }
+            }
+        });
+    }
+}
+
+/**
  * Legacy function for backward compatibility - now uses multi-strategy approach
  * @param {string} baseUrl - Base command
  * @param {string} url - URL to fetch
@@ -1089,22 +1200,26 @@ app.post('/api/download', async (req, res) => {
                 download.startTime = Date.now();
                 
                 // Use SMART DOWNLOAD: analyzes formats, picks lowest quality, then downloads
+                // ⭐ FIXED: Pass 'download' object as 4th parameter for status updates!
                 await smartDownload(
                     downloadId,
                     videoUrl,
                     outputPath,
+                    download,  // ⭐ PASS DOWNLOAD OBJECT so status can be updated to 'downloading'
                     (progress) => {
                         download.progress = progress.percent;
                         download.downloaded = progress.downloaded;
                         download.total = progress.total;
+                        download.speed = progress.speed;
                         
-                        // Log progress every 25%
-                        if (progress.percent % 25 < 5 || progress.percent === 100) {
-                            console.log(`[Download ${downloadId.substring(0,8)}] Progress: ${progress.percent}%`);
+                        // Log progress every 10%
+                        if (progress.percent % 10 < 5 || progress.percent === 100) {
+                            console.log(`[Download ${downloadId.substring(0,8)}] Progress: ${progress.percent}% ${progress.speed ? '@ ' + progress.speed : ''}`);
                         }
                     },
                     (result) => {
                         download.status = 'completed';
+                        download.progress = 100;
                         download.endTime = Date.now();
                         console.log(`[Download ${downloadId.substring(0,8)}] ✅ COMPLETED!`);
                     },
@@ -1601,8 +1716,9 @@ function analyzeVideoFormats(videoUrl) {
 
 /**
  * Smart download with automatic format selection (LOWEST QUALITY)
+ * Now with real-time progress tracking using spawn()
  */
-function smartDownload(downloadId, videoUrl, outputPath, onProgress, onComplete, onError) {
+function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress, onComplete, onError) {
     return new Promise(async (resolve, reject) => {
         console.log('\n[Smart Download] Starting smart download for:', videoUrl);
         console.log('[Smart Download] Step 1: Analyzing formats...');
@@ -1623,16 +1739,27 @@ function smartDownload(downloadId, videoUrl, outputPath, onProgress, onComplete,
                 console.log('   - Size:', Math.round(analysis.recommendedFormat.filesize / 1024 / 1024), 'MB');
             }
             
-            // Step 2: Download with selected format using multi-strategy cookie handling
+            // ⭐ CRITICAL FIX: Update status to DOWNLOADING before starting download
             console.log('[Smart Download] Step 3: Starting download...');
+            if (downloadObj) {
+                downloadObj.status = 'downloading';
+                downloadObj.progress = 0;
+                console.log('[Smart Download] ✅ Status updated to: downloading');
+            }
             
-            const baseCmd = `yt-dlp --format "${selectedFormat}" --merge-output-format mp4 --no-check-certificate`;
-            const strategies = buildCommandsWithCookieStrategies(baseCmd + ' -o "' + outputPath.replace(/\.[^.]+$/, '') + '.%(ext)s"', videoUrl);
+            // Step 3: Download with selected format using spawn() for REAL-TIME progress
+            const outputTemplate = outputPath.replace(/\.[^.]+$/, '') + '.%(ext)s';
+            const baseCmd = `yt-dlp --format "${selectedFormat}" --merge-output-format mp4 --no-check-certificate --newline -o "${outputTemplate}"`;
+            const strategies = buildCommandsWithCookieStrategies(baseCmd, videoUrl);
             
-            executeWithRetry(strategies, 0,
+            // Use new executeWithProgress function that supports real-time progress
+            executeWithProgress(strategies, 0, downloadObj, onProgress,
                 // Success
                 (stdout, stderr) => {
                     console.log('[Smart Download] ✅ Download complete!');
+                    if (downloadObj) {
+                        downloadObj.progress = 100;
+                    }
                     onComplete(stdout);
                     resolve(stdout);
                 },
@@ -1775,21 +1902,24 @@ app.post('/api/download/batch', async (req, res) => {
                     console.log(`\n[Batch ${i+1}/${videos.length}] Starting:`, video.title?.substring(0, 40));
                     
                     // Use smart download (analyze → pick lowest quality → download)
+                    // ⭐ FIXED: Pass 'download' object for status updates
                     await smartDownload(
                         downloadId,
                         videoUrl,
                         outputPath,
+                        download,  // ⭐ PASS DOWNLOAD OBJECT so status updates work
                         (progress) => {
                             download.progress = progress.percent;
-                            download.status = 'downloading';
+                            download.speed = progress.speed;
                             
-                            // Log every 25%
-                            if (progress.percent % 25 < 5 || progress.percent === 100) {
-                                console.log(`  [${downloadId.substring(0,6)}] ${progress.percent}%`);
+                            // Log every 10%
+                            if (progress.percent % 10 < 5 || progress.percent === 100) {
+                                console.log(`  [Batch ${i+1}/${downloadId.substring(0,6)}] ${progress.percent}% ${progress.speed ? '@ ' + progress.speed : ''}`);
                             }
                         },
                         (result) => {
                             download.status = 'completed';
+                            download.progress = 100;
                             download.endTime = Date.now();
                             console.log(`  [${downloadId.substring(0,6)}] ✅ Complete!`);
                         },
