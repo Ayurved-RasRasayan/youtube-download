@@ -621,6 +621,211 @@ app.delete('/api/channels', function(req, res) {
 });
 
 // =============================================================================
+// FORMAT ANALYZER - Scan video for available formats before download
+// =============================================================================
+
+/**
+ * Analyzes available formats for a YouTube video and selects LOWEST quality
+ * Uses: yt-dlp --list-formats (parses text output for reliability)
+ * 
+ * @param {string} videoId - YouTube video ID
+ * @returns {Promise<Object>} - Selected format info with lowest quality
+ */
+function analyzeFormats(videoId) {
+    return new Promise((resolve) => {
+        const videoUrl = 'https://www.youtube.com/watch?v=' + videoId;
+        
+        // Dynamic auth for format analysis too!
+        const authFlags = checkCookieFile() 
+            ? '--cookies "' + AUTH_CONFIG.cookieFilePath + '"' 
+            : '--extractor-args "youtube:player_client=web"';
+        
+        // Command to list all available formats
+        const cmd = 'yt-dlp --js-runtimes node ' + authFlags + ' --user-agent "' + getRandomUserAgent() + '" --list-formats "' + videoUrl + '" 2>&1';
+        
+        console.log('[FormatAnalyzer] 📊 Scanning formats for:', videoId);
+        
+        const { exec } = require('child_process');
+        
+        exec(cmd, { maxBuffer: 10 * 1024 * 1024, timeout: 30000 }, (error, stdout, stderr) => {
+            if (error) {
+                console.log('[FormatAnalyzer] ⚠️ Analysis failed, using fallback -', error.message.slice(0, 100));
+                return resolve(getFallbackLowFormat());
+            }
+            
+            try {
+                const output = stdout || stderr;
+                const selectedFormat = parseFormatsAndSelectLowest(output, videoId);
+                console.log('[FormatAnalyzer] ✅ Selected:', selectedFormat.resolution, '(' + selectedFormat.formatId + ')');
+                resolve(selectedFormat);
+            } catch (parseError) {
+                console.error('[FormatAnalyzer] ❌ Parse error:', parseError.message);
+                resolve(getFallbackLowFormat());
+            }
+        });
+    });
+}
+
+/**
+ * Parse yt-dlp --list-formats output and find LOWEST quality format
+ */
+function parseFormatsAndSelectLowest(output, videoId) {
+    const lines = output.split('\n').filter(line => {
+        const trimmed = line.trim();
+        return trimmed && !trimmed.startsWith('[info]') && !trimmed.startsWith('[warning]') && !trimmed.startsWith('ERROR');
+    });
+    
+    // Find format lines (contain format code, extension, resolution info)
+    const formatLines = lines.filter(line => {
+        return /\d+\s+(audio|video|mp4|webm|m4a)/i.test(line) || 
+               line.includes('audio only') || 
+               line.includes('video only') ||
+               /^\s*\d+/.test(line);
+    });
+    
+    if (formatLines.length === 0) {
+        console.log('[FormatAnalyzer] No format lines found in output');
+        return getFallbackLowFormat();
+    }
+    
+    // Parse each format line to find WORST (lowest quality)
+    let worstVideoFormat = null;
+    let worstAudioFormat = null;
+    let worstCombinedFormat = null;
+    
+    formatLines.forEach(line => {
+        // Parse format line: "format_code  extension  resolution  note"
+        const parts = line.trim().split(/\s{2,}/).map(p => p.trim());
+        if (parts.length < 2) return;
+        
+        const formatCode = parts[0].split(/\s/)[0]; // First word is format code
+        const extension = parts[1] || 'unknown';
+        let resolution = parts.length > 2 ? parts[2] : 'unknown';
+        
+        // Check if audio-only or video-only
+        const isAudioOnly = line.toLowerCase().includes('audio only') || 
+                           resolution.toLowerCase() === 'audio only' ||
+                           (line.match(/only\s*audio/i) !== null);
+        
+        const isVideoOnly = line.toLowerCase().includes('video only') ||
+                           (line.match(/only\s*video/i) !== null);
+        
+        // Parse resolution height for comparison (lower = worse quality = what we want)
+        let height = Infinity;
+        
+        if (/^\d+x\d+$/.test(resolution)) {
+            // Format like "256x144"
+            height = parseInt(resolution.split('x')[1]);
+        } else if (/^\d+p$/.test(resolution)) {
+            // Format like "360p"
+            height = parseInt(resolution);
+        } else if (/^\d+x/.test(resolution)) {
+            // Partial match
+            const match = resolution.match(/(\d+)x/);
+            if (match) height = parseInt(match[1]);
+        } else if (/(\d+)p?/.test(resolution)) {
+            // Extract any number followed by p
+            const match = resolution.match(/(\d+)/);
+            if (match) height = parseInt(match[1]);
+        }
+        
+        const formatInfo = {
+            code: formatCode,
+            ext: extension,
+            resolution: resolution,
+            height: height,
+            isAudioOnly: isAudioOnly,
+            isVideoOnly: isVideoOnly
+        };
+        
+        // Track worst (lowest quality) of each type
+        if (isAudioOnly && (!worstAudioFormat || height < worstAudioFormat.height)) {
+            worstAudioFormat = formatInfo;
+        } else if (!isAudioOnly && isFinite(height)) {
+            // Video or combined format
+            if (!worstVideoFormat || height < worstVideoFormat.height) {
+                worstVideoFormat = formatInfo;
+                // If not video-only, it's a combined format (video+audio together)
+                if (!isVideoOnly) {
+                    worstCombinedFormat = formatInfo;
+                }
+            }
+        }
+    });
+    
+    // Determine best format string to use (prefer combined > merged > video only)
+    let selectedFormat;
+    
+    if (worstCombinedFormat && !worstCombinedFormat.isVideoOnly) {
+        // BEST CASE: Found a combined format (video+audio together) - no merging needed!
+        selectedFormat = {
+            formatId: worstCombinedFormat.code,
+            formatString: worstCombinedFormat.code,
+            resolution: worstCombinedFormat.resolution,
+            fileSize: estimateFileSize(worstCombinedFormat.height),
+            ext: worstCombinedFormat.ext,
+            needsMerge: false,
+            note: 'Combined format (no merge needed)'
+        };
+    } else if (worstVideoFormat && worstAudioFormat) {
+        // Need to merge video + audio separately
+        selectedFormat = {
+            formatId: worstVideoFormat.code + '+' + worstAudioFormat.code,
+            formatString: worstVideoFormat.code + '+' + worstAudioFormat.code,
+            resolution: worstVideoFormat.resolution,
+            fileSize: estimateFileSize(worstVideoFormat.height),
+            ext: 'mp4',
+            needsMerge: true,
+            note: 'Merged: video(' + worstVideoFormat.resolution + ') + audio'
+        };
+    } else if (worstVideoFormat) {
+        // Only video available (rare)
+        selectedFormat = {
+            formatId: worstVideoFormat.code,
+            formatString: worstVideoFormat.code,
+            resolution: worstVideoFormat.resolution,
+            fileSize: estimateFileSize(worstVideoFormat.height),
+            ext: worstVideoFormat.ext,
+            needsMerge: false,
+            note: 'Video only'
+        };
+    } else {
+        // Fallback
+        return getFallbackLowFormat();
+    }
+    
+    return selectedFormat;
+}
+
+/**
+ * Fallback low-quality format when analysis fails
+ */
+function getFallbackLowFormat() {
+    return {
+        formatId: 'worst[ext=mp4]/worst',
+        formatString: 'worst[ext=mp4]/worst',
+        resolution: 'Auto (Lowest)',
+        fileSize: '~5-20 MB',
+        ext: 'mp4',
+        needsMerge: false,
+        note: 'Safe fallback - lowest quality'
+    };
+}
+
+/**
+ * Estimate file size based on resolution height
+ */
+function estimateFileSize(height) {
+    if (!isFinite(height)) return '~5-20 MB';
+    if (height <= 240) return '3-8 MB';
+    if (height <= 360) return '5-15 MB';
+    if (height <= 480) return '10-25 MB';
+    if (height <= 720) return '20-50 MB';
+    if (height <= 1080) return '40-100 MB';
+    return '100+ MB';
+}
+
+// =============================================================================
 // DOWNLOAD FUNCTIONALITY
 // =============================================================================
 
@@ -752,7 +957,7 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
     });
 }
 
-// Start download
+// Start download (WITH FORMAT ANALYSIS - Selects LOWEST quality automatically)
 app.post('/api/download', async function(req, res) {
     const { videoId, title, channelId, quality, format } = req.body;
     
@@ -772,114 +977,164 @@ app.post('/api/download', async function(req, res) {
     
     const safeTitle = title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 200);
     
-    // FIX: Build format options that work with fixed output paths
-    // Key insight: When using -o "fixed_name.ext", you CANNOT use formats that require merging
-    // Solution: Use formats that are already combined, or download to temp then rename
-    
+    // Determine output extension based on requested format type
     let formatExt = 'mp4';
-    let formatOptions = '';
-    let mergeOption = '';
-    
-    switch (format) {
-        case 'mp3':
-            formatExt = 'mp3';
-            formatOptions = '-x --audio-format mp3 --audio-quality 0';
-            break;
-        case 'm4a':
-            formatExt = 'm4a';
-            formatOptions = '-x --audio-format m4a';
-            break;
-        case 'webm':
-            formatExt = 'webm';
-            formatOptions = 'bestaudio[ext=webm]/bestaudio';
-            mergeOption = '--merge-output-format webm';
-            break;
-        default:
-            // MP4 video - CRITICAL FIX: Use pre-merged format to avoid "Fixed output name" error
-            formatExt = 'mp4';
-            
-            if (quality && quality !== 'best' && quality !== '1080') {
-                // For specific quality: prefer already-merged MP4, fallback to best matching
-                formatOptions = `best[height<=${quality}[ext=mp4]]/best[height<=${quality}/ext=mp4]/best[height<=${quality}]`;
-            } else {
-                // Default: Prefer pre-merged MP4 formats (no merging needed!)
-                // This avoids the "more than one file to download" error
-                formatOptions = 'best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
-                mergeOption = '--merge-output-format mp4';
-            }
-    }
+    if (format === 'mp3') formatExt = 'mp3';
+    else if (format === 'm4a') formatExt = 'm4a';
+    else if (format === 'webm') formatExt = 'webm';
     
     const finalPath = path.join(videoDir, `${safeTitle}.${formatExt}`);
     
-    // Dynamic auth for downloads too!
+    // Dynamic auth for downloads
     const authFlags = checkCookieFile() 
         ? `--cookies "${AUTH_CONFIG.cookieFilePath}"` 
         : '--extractor-args "youtube:player_client=web"';
     
-    // FIX: When merging is needed, download to temp directory first, then move to finalPath
-    // This avoids "Fixed output name but more than one file to download" error
-    let command;
-    if (mergeOption) {
-        // Download to temp file in same directory, let yt-dlp choose the name
-        const tempPattern = path.join(videoDir, `${safeTitle}.f%(format_id)s.%(ext)s`);
-        command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${formatOptions}" ${mergeOption} --no-check-certificate -o "${tempPattern}" "https://www.youtube.com/watch?v=${videoId}"`;
-    } else {
-        // No merging needed - safe to use direct output path
-        command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${formatOptions}" --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
-    }
-    
+    // Create download job with "analyzing" status initially
     const downloadJob = {
         jobId: jobId,
         videoId: videoId,
         title: title,
         channelId: channelId,
-        status: 'queued',
-        progress: { percent: 0, speed: '0 KB/s', eta: 'Unknown' },
+        status: 'analyzing',  // Start as analyzing while we scan formats
+        progress: { percent: 0, speed: 'Scanning formats...', eta: 'Please wait' },
         outputPath: finalPath,
-        startedAt: new Date().toISOString()
+        startedAt: new Date().toISOString(),
+        formatInfo: { resolution: 'Analyzing...', formatId: 'scanning', fileSize: 'Detecting...' }
     };
     
     activeDownloads.set(jobId, downloadJob);
     
     console.log('\n[API] Download started:', title, '- Job:', jobId);
+    console.log('[API] 📊 Step 1: Analyzing available formats for lowest quality...');
     
-    res.json({ success: true, jobId: jobId, message: 'Download started' });
+    res.json({ success: true, jobId: jobId, message: 'Download started - analyzing formats' });
     
-    // Execute asynchronously
+    // Execute asynchronously WITH FORMAT ANALYSIS
     (async () => {
         try {
             await applyRateLimit();
+            
+            // ================================================================
+            // STEP 1: ANALYZE FORMATS (unless audio extraction mode)
+            // ================================================================
+            let selectedFormat;
+            
+            if (format === 'mp3' || format === 'm4a') {
+                // Audio mode - use simple audio extraction
+                selectedFormat = {
+                    formatId: 'audio-' + format,
+                    formatString: null,  // Will use -x flags instead
+                    resolution: 'Audio (' + format.toUpperCase() + ')',
+                    fileSize: '~2-10 MB',
+                    ext: format,
+                    needsMerge: false,
+                    note: 'Audio extraction mode'
+                };
+            } else {
+                // VIDEO MODE: Scan available formats and select LOWEST quality!
+                console.log('[FormatAnalyzer] Running format analysis for:', videoId);
+                selectedFormat = await analyzeFormats(videoId);
+                
+                // Update job with format info
+                if (activeDownloads.has(jobId)) {
+                    const job = activeDownloads.get(jobId);
+                    job.formatInfo = {
+                        resolution: selectedFormat.resolution,
+                        formatId: selectedFormat.formatId,
+                        fileSize: selectedFormat.fileSize,
+                        note: selectedFormat.note
+                    };
+                    job.progress = { percent: 5, speed: 'Format selected', eta: 'Starting download...' };
+                }
+            }
+            
+            // ================================================================
+            // STEP 2: BUILD DOWNLOAD COMMAND USING ANALYZED FORMAT
+            // ================================================================
+            console.log('[Download] 📹 Step 2: Building command with format:', selectedFormat.formatId);
+            
+            let command;
+            
+            if (format === 'mp3' || format === 'm4a') {
+                // Audio extraction - no merging needed
+                command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" -x --audio-format ${format} --audio-quality 0 --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+            } else if (selectedFormat.needsMerge) {
+                // Video needs merging - use temp pattern to avoid "Fixed output name" error
+                const tempPattern = path.join(videoDir, `${safeTitle}.f%(format_id)s.%(ext)s`);
+                command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${selectedFormat.formatString}" --merge-output-format ${formatExt} --no-check-certificate -o "${tempPattern}" "https://www.youtube.com/watch?v=${videoId}"`;
+            } else {
+                // Combined format or no merge needed - direct output is safe!
+                command = `yt-dlp --js-runtimes node ${authFlags} --user-agent "${getRandomUserAgent()}" --format "${selectedFormat.formatString}" --no-check-certificate -o "${finalPath}" "https://www.youtube.com/watch?v=${videoId}"`;
+            }
+            
+            // Update status to downloading
+            if (activeDownloads.has(jobId)) {
+                activeDownloads.get(jobId).status = 'downloading';
+            }
+            
+            // ================================================================
+            // STEP 3: EXECUTE DOWNLOAD
+            // ================================================================
             const result = await executeSingleDownload(command, jobId, videoId, title, channelId, finalPath);
             
             if (result.success) {
-                // FIX: If we used merging, the file might be at a temp path - rename it
-                if (mergeOption && fs.existsSync(videoDir)) {
+                // If we used merging, rename temp file to final path
+                if (selectedFormat.needsMerge && fs.existsSync(videoDir)) {
                     try {
-                        // Find the downloaded file (look for files matching our pattern)
                         const files = fs.readdirSync(videoDir).filter(f => 
                             f.startsWith(safeTitle) && (f.endsWith('.mp4') || f.endsWith('.webm') || f.endsWith('.m4a'))
                         );
                         
                         if (files.length > 0) {
                             const downloadedFile = path.join(videoDir, files[0]);
-                            // Only rename if it's not already at the expected path
                             if (downloadedFile !== finalPath && !fs.existsSync(finalPath)) {
                                 fs.renameSync(downloadedFile, finalPath);
                                 console.log('[Download] ✅ Renamed to:', finalPath);
                             }
                         }
                     } catch (renameErr) {
-                        console.warn('[Download] ⚠️ Rename failed (file may already be correct):', renameErr.message);
+                        console.warn('[Download] ⚠️ Rename failed:', renameErr.message);
                     }
                 }
-                console.log('[Download] ✅ Success:', title);
+                console.log('[Download] ✅ Success:', title, '(' + selectedFormat.resolution + ')');
             } else {
                 console.error('[Download] ❌ Failed:', title);
             }
         } catch (err) {
             console.error('[Download] Exception:', err.message);
+            if (activeDownloads.has(jobId)) {
+                activeDownloads.get(jobId).status = 'error';
+                activeDownloads.get(jobId).error = err.message;
+            }
         }
     })();
+});
+
+// =============================================================================
+// FORMAT ANALYSIS API - Manually check available formats for a video
+// =============================================================================
+app.get('/api/video/:videoId/formats', async function(req, res) {
+    const videoId = req.params.videoId;
+    
+    console.log('\n[API] 📊 Format analysis request for:', videoId);
+    
+    try {
+        const formatInfo = await analyzeFormats(videoId);
+        
+        res.json({
+            success: true,
+            videoId: videoId,
+            formatInfo: formatInfo,
+            message: 'Format analysis complete - Selected: ' + formatInfo.resolution + ' (' + formatInfo.formatId + ')'
+        });
+    } catch (error) {
+        console.error('[API] Format analysis error:', error.message);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Failed to analyze formats: ' + error.message 
+        });
+    }
 });
 
 // Get download status
