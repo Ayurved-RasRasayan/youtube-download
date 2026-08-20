@@ -1212,22 +1212,28 @@ app.post('/api/download', async (req, res) => {
                         download.total = progress.total;
                         download.speed = progress.speed;
                         
-                        // Log progress every 10%
-                        if (progress.percent % 10 < 5 || progress.percent === 100) {
-                            console.log(`[Download ${downloadId.substring(0,8)}] Progress: ${progress.percent}% ${progress.speed ? '@ ' + progress.speed : ''}`);
+                        // Log progress only when percentage changes (clean output)
+                        const lastPercent = download._lastLoggedPercent || -1;
+                        if (progress.percent !== lastPercent && (progress.percent % 5 === 0 || progress.percent === 100)) {
+                            download._lastLoggedPercent = progress.percent;
+                            const shortName = (download.filename || 'video').substring(0, 35);
+                            const sizeInfo = download.total ? `${download.total}` : '';
+                            console.log(`   ⬇️  ${shortName} | ${sizeInfo} | ${progress.percent}%`);
                         }
                     },
                     (result) => {
                         download.status = 'completed';
                         download.progress = 100;
                         download.endTime = Date.now();
-                        console.log(`[Download ${downloadId.substring(0,8)}] ✅ COMPLETED!`);
+                        const shortName = (download.filename || 'video').substring(0, 35);
+                        console.log(`   ✅  ${shortName} | Download complete!`);
                     },
                     (error) => {
                         download.status = 'error';
                         download.error = error;
                         download.endTime = Date.now();
-                        console.log(`[Download ${downloadId.substring(0,8)}] ❌ FAILED:`, error);
+                        const shortName = (download.filename || 'video').substring(0, 35);
+                        console.log(`   ❌  ${shortName} | Failed: ${error}`);
                     }
                 );
             } catch (err) {
@@ -1912,22 +1918,28 @@ app.post('/api/download/batch', async (req, res) => {
                             download.progress = progress.percent;
                             download.speed = progress.speed;
                             
-                            // Log every 10%
-                            if (progress.percent % 10 < 5 || progress.percent === 100) {
-                                console.log(`  [Batch ${i+1}/${downloadId.substring(0,6)}] ${progress.percent}% ${progress.speed ? '@ ' + progress.speed : ''}`);
+                            // Log only when percentage changes (clean output)
+                            const lastPercent = download._lastLoggedPercent || -1;
+                            if (progress.percent !== lastPercent && (progress.percent % 5 === 0 || progress.percent === 100)) {
+                                download._lastLoggedPercent = progress.percent;
+                                const shortName = (download.filename || 'video').substring(0, 30);
+                                const sizeInfo = download.total ? `${download.total}` : '';
+                                console.log(`   ⬇️  [${i+1}/${videos.length}] ${shortName} | ${progress.percent}%`);
                             }
                         },
                         (result) => {
                             download.status = 'completed';
                             download.progress = 100;
                             download.endTime = Date.now();
-                            console.log(`  [${downloadId.substring(0,6)}] ✅ Complete!`);
+                            const shortName = (download.filename || 'video').substring(0, 30);
+                            console.log(`   ✅  [${i+1}/${videos.length}] ${shortName} | Done`);
                         },
                         (errorMsg) => {
                             download.status = 'error';
                             download.error = errorMsg;
                             download.endTime = Date.now();
-                            console.log(`  [${downloadId.substring(0,6)}] ❌ Error:`, errorMsg);
+                            const shortName = (download.filename || 'video').substring(0, 30);
+                            console.log(`   ❌  [${i+1}/${videos.length}] ${shortName} | Error: ${errorMsg}`);
                         }
                     );
                     
