@@ -8,6 +8,28 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+function toNativePath(unixStylePath) {
+    if (/^[A-Za-z]:\\/.test(unixStylePath)) return unixStylePath;
+    if (unixStylePath.startsWith('/') && unixStylePath.length >= 3 && /^[a-zA-Z]/.test(unixStylePath.charAt(1))) {
+        return unixStylePath.charAt(1).toUpperCase() + ':\\' + unixStylePath.slice(2).replace(/\//g, '\\');
+    }
+    return path.resolve(unixStylePath);
+}
+
+function findIndexHtml() {
+    const paths = [
+        path.join(__dirname, '../public/index.html'),
+        path.join(process.cwd(), '../public/index.html'),
+        path.resolve(__dirname, '..', 'public', 'index.html'),
+    ];
+    for (const p of paths) {
+        if (fs.existsSync(p)) { console.log('[findIndexHtml] FOUND:', p); return p; }
+    }
+    console.log('[findIndexHtml] NOT FOUND');
+    return null;
+}
+
+
 // =============================================================================
 // PATH CONVERSION - Convert Cygwin/Unix paths to Native OS paths
 // =============================================================================
@@ -1333,18 +1355,17 @@ function extractChannelId(url) {
 // Fetch channel info using yt-dlp
 function fetchChannelInfo(channelId, channelUrl) {
     return new Promise((resolve, reject) => {
-        // Use converted cookie path (works on Windows/Cygwin)
-        const cmd = [
-            'yt-dlp --js-runtimes node --remote-components ejs:github',
-            '--user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"',
-            '--extractor-args "youtube:player_client=web"',
-            '--no-check-certificate',
-            '--cookies "' + AUTH_CONFIG.cookieFilePath + '"',
-            '--remote-components ejs:github',
-            '--flat-playlist',
-            '--print "%(id)s\\t%(title)s\\t%(duration)s\\t%(upload_date)s\\t%(view_count)s\\t%(is_live)s)"',
-            '"' + channelUrl + '"'
-        ].join(' ');
+        const cmd = 'yt-dlp --js-runtimes node --remote-components ejs:github --user-agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36" --extractor-args "youtube:player_client=web" --no-check-certificate --cookies "" + AUTH_CONFIG.cookieFilePath + "" --remote-components ejs:github --flat-playlist --print "%(id)s\t%(title)s\t%(duration)s\t%(upload_date)s\t%(view_count)s\t%(is_live)s" "' + channelUrl + '"';
+        
+        exec(cmd, { maxBuffer: 50 * 1024 * 1024 }, (error, stdout, stderr) => {
+            if (error) {
+                reject(new Error('Failed to fetch channel: ' + error.message));
+                return;
+            }
+
+            const lines = stdout.trim().split('\n').filter(function(line) { return line.trim(); });
+            const videos = [];
+            const liveVideos = [];
 
             lines.forEach(function(line) {
                 const parts = line.split('\t');
