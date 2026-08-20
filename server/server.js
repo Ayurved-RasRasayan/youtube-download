@@ -920,6 +920,12 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                 download.progress = progressInfo;
                 download.status = 'downloading';
                 
+                // Human-readable progress text for UI
+                const percent = progressInfo.percent.toFixed(1);
+                const speed = progressInfo.speed;
+                const eta = progressInfo.eta;
+                download.progressText = `⬇️ ${percent}% | ${speed} | ETA: ${eta}`;
+                
                 // Log progress updates every time we get new data
                 const progressStr = `${progressInfo.percent}% | ${progressInfo.speed} | ETA: ${progressInfo.eta}`;
                 if (lastProgressUpdate !== progressStr) {
@@ -949,11 +955,18 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
             
             if (percentMatch && activeDownloads.has(jobId)) {
                 const download = activeDownloads.get(jobId);
+                const percent = parseFloat(percentMatch[1]);
+                const speed = speedMatch ? speedMatch[1] : '0 KB/s';
+                const eta = etaMatch ? etaMatch[1] : 'Unknown';
+                
                 download.progress = {
-                    percent: parseFloat(percentMatch[1]),
-                    speed: speedMatch ? speedMatch[1] : '0 KB/s',
-                    eta: etaMatch ? etaMatch[1] : 'Unknown'
+                    percent: percent,
+                    speed: speed,
+                    eta: eta
                 };
+                
+                // Human-readable progress text for UI
+                download.progressText = `⬇️ ${percent.toFixed(1)}% | ${speed} | ETA: ${eta}`;
             }
         });
         
@@ -970,6 +983,7 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                 const download = activeDownloads.get(jobId);
                 download.status = 'error';
                 download.error = err.message;
+                download.progressText = `❌ Error: ${err.message.substring(0, 50)}...`;
             }
             
             resolve({ success: false, error: err.message });
@@ -1025,6 +1039,7 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                     const download = activeDownloads.get(jobId);
                     download.status = 'completed';
                     download.progress = { percent: 100, speed: '0 KB/s', eta: 'Done (' + fileSize + ')' };
+                    download.progressText = `✅ Complete! (${fileSize})`;
                     download.completedAt = new Date().toISOString();
                 }
                 
@@ -1094,6 +1109,10 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                     download.status = 'error';
                     download.error = errorMessage;
                     download.errorDetails = errorOutput.substring(0, 1000);
+                    
+                    // Human-readable error message for UI
+                    const shortError = errorMessage.length > 60 ? errorMessage.substring(0, 57) + '...' : errorMessage;
+                    download.progressText = `❌ Failed: ${shortError}`;
                 }
                 
                 resolve({ success: false, error: errorMessage });
@@ -1108,6 +1127,7 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                 const download = activeDownloads.get(jobId);
                 download.status = 'error';
                 download.error = err.message;
+                download.progressText = `❌ Error: ${err.message.substring(0, 50)}`;
             }
             
             resolve({ success: false, error: err.message });
@@ -1156,6 +1176,7 @@ app.post('/api/download', async function(req, res) {
         channelId: channelId,
         status: 'analyzing',  // Start as analyzing while we scan formats
         progress: { percent: 0, speed: 'Scanning formats...', eta: 'Please wait' },
+        progressText: '⏳ Analyzing formats...',  // Human-readable progress for UI
         outputPath: finalPath,
         startedAt: new Date().toISOString(),
         formatInfo: { resolution: 'Analyzing...', formatId: 'scanning', fileSize: 'Detecting...' }
@@ -1204,6 +1225,7 @@ app.post('/api/download', async function(req, res) {
                         note: selectedFormat.note
                     };
                     job.progress = { percent: 5, speed: 'Format selected', eta: 'Starting download...' };
+                    job.progressText = `📹 ${selectedFormat.resolution} - Starting...`;
                 }
             }
             
