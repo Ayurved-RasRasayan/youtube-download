@@ -8,6 +8,70 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
+// =============================================================================
+// ROBUST PATH RESOLUTION - Windows/Cygwin Compatible
+// =============================================================================
+
+function resolvePublicPath(relativePath) {
+    const possiblePaths = [
+        // Method 1: Standard relative path
+        path.join(__dirname, '../public', relativePath),
+        // Method 2: Using process.cwd() 
+        path.join(process.cwd(), '..', 'public', relativePath),
+        // Method 3: Resolve from script location
+        path.resolve(__dirname, '..', 'public', relativePath),
+        // Method 4: Try absolute paths based on common locations
+        path.join(path.dirname(process.argv[1]), '..', 'public', relativePath),
+    ];
+    
+    // Remove duplicates and check each path
+    const uniquePaths = [...new Set(possiblePaths)];
+    
+    for (const p of uniquePaths) {
+        console.log('[Path Resolver] Checking:', p);
+        if (fs.existsSync(p)) {
+            console.log('[Path Resolver] ✅ FOUND:', p);
+            return p;
+        }
+    }
+    
+    // Last resort: return first path (will show error)
+    console.log('[Path Resolver] ❌ NOT FOUND, using fallback');
+    return possiblePaths[0];
+}
+
+function findIndexHtml() {
+    const possiblePaths = [
+        // Primary location
+        path.join(__dirname, '../public/index.html'),
+        // Alternative locations
+        path.join(__dirname, '../../public/index.html'),
+        path.join(process.cwd(), '../public/index.html'),
+        path.join(process.cwd(), 'public/index.html'),
+        path.resolve(__dirname, '..', 'public', 'index.html'),
+        // Windows-specific paths
+        path.join(__dirname.replace(/\\/g, '/').replace(/\/g, '/'), '../public/index.html'),
+    ];
+    
+    console.log('\n[findIndexHtml] Searching for index.html...');
+    
+    for (const p of possiblePaths) {
+        console.log('   Checking:', p);
+        try {
+            if (fs.existsSync(p)) {
+                console.log('   ✅ FOUND:', p);
+                return p;
+            }
+        } catch(e) {
+            console.log('   ❌ Error:', e.message);
+        }
+    }
+    
+    console.log('   ⚠️ index.html not found in any location!');
+    return null;
+}
+
+
 // Child process tracking for download cancellation
 const childProcessMap = new Map();
 
@@ -2497,19 +2561,58 @@ cron.schedule('0 3 * * *', function() {
     });
 });
 
-// Serve the HTML frontend
+// Serve the HTML frontend (with robust path resolution)
 app.get('/', function(req, res) {
-    const htmlPath = path.join(__dirname, '../public/index.html');
-    if (fs.existsSync(htmlPath)) {
-        res.sendFile(htmlPath);
+    console.log('\n[Root Route] Serving index.html...');
+    console.log('[Root Route] __dirname:', __dirname);
+    console.log('[Root Route] process.cwd():', process.cwd());
+    
+    const htmlPath = findIndexHtml();
+    
+    if (htmlPath && fs.existsSync(htmlPath)) {
+        console.log('[Root Route] ✅ Sending file:', htmlPath);
+        res.sendFile(htmlPath, function(err) {
+            if (err) {
+                console.error('[Root Route] Error sending file:', err.message);
+                sendFallbackPage(res);
+            } else {
+                console.log('[Root Route] ✅ File sent successfully!');
+            }
+        });
     } else {
-        res.send('<!DOCTYPE html><html><head><title>YouTube Downloader</title></head><body>' +
-            '<h1>YouTube Channel Downloader</h1>' +
-            '<p>Server is running on port ' + PORT + '</p>' +
-            '<p>API available at <a href="/api/health">/api/health</a></p>' +
-            '</body></html>');
+        console.error('[Root Route] ❌ index.html not found!');
+        sendFallbackPage(res);
     }
 });
+
+// Fallback page when index.html is missing
+function sendFallbackPage(res) {
+    res.status(500).send('<!DOCTYPE html><html><head><title>YouTube Downloader - Error</title>' +
+        '<style>body{font-family:Arial,sans-serif;max-width:800px;margin:50px auto;padding:20px;}' +
+        '.error{color:#d32f2f;background:#ffebee;padding:15px;border-radius:8px;margin:20px 0;}' +
+        '.info{background:#e3f2fd;padding:15px;border-radius:8px;margin:20px 0;}' +
+        'code{background:#f5f5f5;padding:2px 6px;border-radius:4px;font-size:14px;}</style></head>' +
+        '<body><h1>⚠️ YouTube Downloader - Frontend Not Found</h1>' +
+        '<div class="error"><strong>Error:</strong> The frontend file (index.html) could not be found.</div>' +
+        '<div class="info"><h3>🔧 How to Fix:</h3>' +
+        '<p>Make sure the folder structure is:</p>' +
+        '<pre>youtube-download/' +
+        '├── server/' +
+        '│   ├── server.js  ← Server running here' +
+        '│   └── package.json' +
+        '├── public/' +
+        '│   └── index.html  ← FRONTEND FILE MISSING!' +
+        '└── cookies.txt</pre>' +
+        '<h3>Quick Fixes:</h3>' +
+        '<ol><li>Check that <code>public/index.html</code> exists</li>' +
+        '<li>Try copying index.html to the server folder</li>' +
+        '<li>Check file permissions</li></ol>' +
+        '<p><strong>Debug Info:</strong></p>' +
+        '<ul><li>__dirname: <code>' + __dirname + '</code></li>' +
+        '<li>Platform: <code>' + process.platform + '</code></li>' +
+        '<li>Node version: <code>' + process.version + '</code></li></ul>' +
+        '</div></body></html>');
+}
 
 // Start server
 
