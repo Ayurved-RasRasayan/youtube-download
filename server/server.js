@@ -2255,35 +2255,59 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
 // DOWNLOAD QUEUE MANAGEMENT
 // =============================================================================
 
-// In-memory download queue
-const downloadQueue = [];
+// Note: Sequential download queue system is defined below (search for "SEQUENTIAL DOWNLOAD QUEUE")
+// This section contains the queue API endpoints and download manager
 
-// GET /api/download-queue - List all downloads (frontend polls this!)
+// GET /api/download-queue - List all downloads + sequential queue status
+// ⚠️ COMPLETELY SILENT: No logging (frontend polls every 2s!)
 app.get('/api/download-queue', (req, res) => {
-    console.log('\n[Queue] GET /api/download-queue requested');
-    
     const allDownloads = downloadManager.getAll();
-    const activeDownloads = allDownloads.filter(d => d.status === 'downloading' || d.status === 'queued');
+    const activeDownloads = allDownloads.filter(d => d.status === 'downloading' || d.status === 'analyzing' || d.status === 'queued');
     const completedDownloads = allDownloads.filter(d => d.status === 'completed');
     const failedDownloads = allDownloads.filter(d => d.status === 'error' || d.status === 'cancelled');
+    const skippedDownloads = allDownloads.filter(d => d.status === 'skipped');
     
-    console.log('[Queue] Status:');
-    console.log('   - Active:', activeDownloads.length);
-    console.log('   - Completed:', completedDownloads.length);
-    console.log('   - Failed:', failedDownloads.length);
+    // Get sequential queue status (no logging!)
+    const seqStatus = downloadQueue.getStatus();
+    const seqStats = seqStatus.stats;
     
     res.json({
         success: true,
+        mode: 'sequential',  // Tell frontend we're in sequential mode!
         queue: {
             active: activeDownloads,
+            currentJob: seqStatus.currentJob,  // Which video is downloading NOW
+            waiting: seqStatus.queueLength,    // How many videos are waiting
             completed: completedDownloads.slice(-20), // Last 20 completed
-            failed: failedDownloads.slice(-10)       // Last 10 failed
+            failed: failedDownloads.slice(-10),       // Last 10 failed
+            skipped: skippedDownloads.slice(-20)
+        },
+        sequential: {
+            isProcessing: seqStatus.isProcessing,
+            currentVideo: seqStatus.currentJob ? {
+                title: seqStatus.currentJob.title,
+                progress: seqStatus.currentJob.progress,
+                batchIndex: seqStatus.currentJob.batchIndex,
+                status: seqStatus.currentJob.status
+            } : null,
+            remainingInQueue: seqStatus.queueLength,
+            overallProgress: {
+                completed: seqStats.completed,
+                failed: seqStats.failed,
+                skipped: seqStats.skipped,
+                totalProcessed: seqStats.completed + seqStats.failed + seqStats.skipped,
+                totalQueued: seqStats.totalQueued,
+                percentage: seqStats.totalQueued > 0 
+                    ? Math.round(((seqStats.completed + seqStats.failed + seqStats.skipped) / seqStats.totalQueued) * 100) 
+                    : 0
+            }
         },
         stats: {
             total: allDownloads.length,
             active: activeDownloads.length,
             completed: completedDownloads.length,
-            failed: failedDownloads.length
+            failed: failedDownloads.length,
+            skipped: skippedDownloads.length
         }
     });
 });
@@ -2311,10 +2335,170 @@ app.delete('/api/download-queue', (req, res) => {
     });
 });
 
-// POST /api/download/batch - Batch download multiple videos with format analysis
+// =============================================================================
+// SEQUENTIAL DOWNLOAD QUEUE SYSTEM
+// =============================================================================
+
+/**
+ * Global sequential download queue
+ * Ensures ONLY ONE video downloads at a time, even in batch mode
+ */
+const downloadQueue = {
+    isProcessing: false,
+    queue: [],
+    currentJob: null,
+    stats: {
+        totalQueued: 0,
+        completed: 0,
+        failed: 0,
+        skipped: 0
+    },
+    
+    /**
+     * Add a download job to the queue
+     * @param {Object} job - Download job configuration
+     */
+    add(job) {
+        this.queue.push(job);
+        this.stats.totalQueued++;
+        console.log(`\n[Queue] 📥 Job added to queue: ${job.title?.substring(0, 30)} | Position: #${this.queue.length}`);
+        
+        // Auto-start processing if not already running
+        if (!this.isProcessing) {
+            this.processNext();
+        }
+        
+        return job;
+    },
+    
+    /**
+     * Process next job in queue (SEQUENTIAL - waits for completion)
+     */
+    async processNext() {
+        // Skip if already processing or queue is empty
+        if (this.isProcessing || this.queue.length === 0) {
+            return;
+        }
+        
+        this.isProcessing = true;
+        const job = this.queue.shift();
+        this.currentJob = job;
+        
+        console.log('\n' + '='.repeat(80));
+        console.log(`🎬 [Sequential Queue] Starting job #${job.batchIndex + 1}/${job.totalInBatch}`);
+        console.log(`   Title: ${job.title}`);
+        console.log(`   Queue remaining: ${this.queue.length} jobs`);
+        console.log('='.repeat(80));
+        
+        try {
+            // Update status to analyzing
+            job.download.status = 'analyzing';
+            job.download.startTime = Date.now();
+            
+            // Execute smart download (this AWaits completion!)
+            await smartDownload(
+                job.downloadId,
+                job.videoUrl,
+                job.outputPath,
+                job.download,
+                (progress) => {
+                    // Real-time progress updates
+                    job.download.progress = progress.percent;
+                    job.download.speed = progress.speed;
+                    
+                    // Clean logging - only on percentage changes
+                    const lastPercent = job.download._lastLoggedPercent || -1;
+                    if (progress.percent !== lastPercent && 
+                        (progress.percent % 10 === 0 || progress.percent === 100)) {
+                        job.download._lastLoggedPercent = progress.percent;
+                        const shortName = (job.download.filename || 'video').substring(0, 25);
+                        console.log(`   ⬇️  [#${job.batchIndex + 1}] ${shortName} | ${progress.percent}%`);
+                    }
+                },
+                (result) => {
+                    // Success callback
+                    job.download.status = 'completed';
+                    job.download.progress = 100;
+                    job.download.endTime = Date.now();
+                    this.stats.completed++;
+                    
+                    const shortName = (job.download.filename || 'video').substring(0, 25);
+                    console.log(`   ✅  [#${job.batchIndex + 1}] COMPLETE: ${shortName}`);
+                    console.log(`   📊 Queue Progress: ${this.stats.completed}/${job.totalInBatch} done`);
+                },
+                (errorMsg) => {
+                    // Error callback
+                    job.download.status = 'error';
+                    job.download.error = errorMsg;
+                    job.download.endTime = Date.now();
+                    this.stats.failed++;
+                    
+                    const shortName = (job.download.filename || 'video').substring(0, 25);
+                    console.log(`   ❌  [#${job.batchIndex + 1}] FAILED: ${shortName}`);
+                    console.log(`   Error: ${errorMsg?.substring(0, 100)}`);
+                }
+            );
+            
+        } catch (err) {
+            // Unexpected error during download
+            job.download.status = 'error';
+            job.download.error = err.message;
+            job.download.endTime = Date.now();
+            this.stats.failed++;
+            console.error(`   ❌ Unexpected error:`, err.message);
+        }
+        
+        // Mark current job as done
+        this.currentJob = null;
+        this.isProcessing = false;
+        
+        // Small delay before next job (prevents rapid firing)
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Process next job in queue
+        if (this.queue.length > 0) {
+            this.processNext();
+        } else {
+            console.log('\n' + '='.repeat(80));
+            console.log('✅ [Sequential Queue] ALL JOBS COMPLETED');
+            console.log(`   Total: ${job.totalInBatch} | ✅ Completed: ${this.stats.completed} | ❌ Failed: ${this.stats.failed}`);
+            console.log('='.repeat(80) + '\n');
+        }
+    },
+    
+    /**
+     * Get current queue status
+     */
+    getStatus() {
+        return {
+            isProcessing: this.isProcessing,
+            currentJob: this.currentJob ? {
+                title: this.currentJob.title,
+                batchIndex: this.currentJob.batchIndex,
+                progress: this.currentJob.download?.progress || 0,
+                status: this.currentJob.download?.status
+            } : null,
+            queueLength: this.queue.length,
+            stats: { ...this.stats }
+        };
+    },
+    
+    /**
+     * Clear the queue (stop processing)
+     */
+    clear() {
+        this.queue = [];
+        this.isProcessing = false;
+        this.currentJob = null;
+        console.log('[Queue] 🗑️ Queue cleared');
+    }
+};
+
+// POST /api/download/batch - Batch download multiple videos SEQUENTIALLY (one at a time!)
 app.post('/api/download/batch', async (req, res) => {
     console.log('\n' + '='.repeat(80));
-    console.log('📦 [Batch Download] POST /api/download/batch');
+    console.log('📦 [Sequential Batch] POST /api/download/batch');
+    console.log('⚡ Mode: ONE VIDEO AT A TIME (Sequential Processing)');
     console.log('='.repeat(80));
     
     try {
@@ -2327,12 +2511,18 @@ app.post('/api/download/batch', async (req, res) => {
             });
         }
 
-        console.log('[Batch Download] Queueing', videos.length, 'videos for download');
-        console.log('[Batch Download] Channel ID:', channelId || 'N/A');
-        console.log('[Batch Download] Quality preference:', quality || 'auto (lowest)');
+        console.log(`\n[Sequential Batch] 📋 Preparing ${videos.length} videos for SEQUENTIAL download`);
+        console.log('[Sequential Batch] Channel ID:', channelId || 'N/A');
+        console.log('[Sequential Batch] Quality preference:', quality || 'auto (lowest)');
+        console.log('[Sequential Batch] ⏳ Videos will download ONE BY ONE (not parallel)');
         
         const jobIds = [];
         const errors = [];
+        
+        // Reset queue stats for new batch
+        if (downloadQueue.queue.length === 0 && !downloadQueue.isProcessing) {
+            downloadQueue.stats = { totalQueued: 0, completed: 0, failed: 0, skipped: 0 };
+        }
         
         for (let i = 0; i < videos.length; i++) {
             const video = videos[i];
@@ -2348,6 +2538,34 @@ app.post('/api/download/batch', async (req, res) => {
             const outputFilename = `${safeTitle}.mp4`;
             const outputPath = path.join(DOWNLOADS_DIR, outputFilename);
             
+            // Check if file already exists (skip if so)
+            const existingFile = checkFileExists(outputFilename);
+            if (existingFile.exists) {
+                console.log(`[Sequential Batch] ⏭️ Skipping [${i+1}/${videos.length}] ${safeTitle.substring(0, 30)} (already exists)`);
+                downloadQueue.stats.skipped++;
+                
+                // Still add to download manager as skipped
+                const skippedDownload = downloadManager.add({
+                    id: downloadId,
+                    url: videoUrl,
+                    videoId: video.id,
+                    title: video.title,
+                    channelId: channelId,
+                    filename: outputFilename,
+                    outputPath: outputPath,
+                    status: 'skipped',
+                    progress: 100,
+                    reason: 'already_exists',
+                    sizeMB: existingFile.sizeMB,
+                    batchIndex: i,
+                    totalInBatch: videos.length,
+                    createdAt: new Date().toISOString()
+                });
+                
+                jobIds.push(downloadId);
+                continue;
+            }
+            
             const download = downloadManager.add({
                 id: downloadId,
                 url: videoUrl,
@@ -2356,7 +2574,7 @@ app.post('/api/download/batch', async (req, res) => {
                 channelId: channelId,
                 filename: outputFilename,
                 outputPath: outputPath,
-                status: 'queued',
+                status: 'queued',  // Will be updated by queue processor
                 progress: 0,
                 batchIndex: i,
                 totalInBatch: videos.length,
@@ -2365,70 +2583,43 @@ app.post('/api/download/batch', async (req, res) => {
             
             jobIds.push(downloadId);
             
-            // Start download asynchronously with delay to avoid overwhelming yt-dlp
-            setTimeout(async () => {
-                try {
-                    download.status = 'analyzing';
-                    download.startTime = Date.now();
-                    
-                    console.log(`\n[Batch ${i+1}/${videos.length}] Starting:`, video.title?.substring(0, 40));
-                    
-                    // Use smart download (analyze → pick lowest quality → download)
-                    // ⭐ FIXED: Pass 'download' object for status updates
-                    await smartDownload(
-                        downloadId,
-                        videoUrl,
-                        outputPath,
-                        download,  // ⭐ PASS DOWNLOAD OBJECT so status updates work
-                        (progress) => {
-                            download.progress = progress.percent;
-                            download.speed = progress.speed;
-                            
-                            // Log only when percentage changes (clean output)
-                            const lastPercent = download._lastLoggedPercent || -1;
-                            if (progress.percent !== lastPercent && (progress.percent % 5 === 0 || progress.percent === 100)) {
-                                download._lastLoggedPercent = progress.percent;
-                                const shortName = (download.filename || 'video').substring(0, 30);
-                                const sizeInfo = download.total ? `${download.total}` : '';
-                                console.log(`   ⬇️  [${i+1}/${videos.length}] ${shortName} | ${progress.percent}%`);
-                            }
-                        },
-                        (result) => {
-                            download.status = 'completed';
-                            download.progress = 100;
-                            download.endTime = Date.now();
-                            const shortName = (download.filename || 'video').substring(0, 30);
-                            console.log(`   ✅  [${i+1}/${videos.length}] ${shortName} | Done`);
-                        },
-                        (errorMsg) => {
-                            download.status = 'error';
-                            download.error = errorMsg;
-                            download.endTime = Date.now();
-                            const shortName = (download.filename || 'video').substring(0, 30);
-                            console.log(`   ❌  [${i+1}/${videos.length}] ${shortName} | Error: ${errorMsg}`);
-                        }
-                    );
-                    
-                } catch (err) {
-                    download.status = 'error';
-                    download.error = err.message;
-                    download.endTime = Date.now();
-                }
-            }, i * 2000); // 2 second delay between each download start
+            // ⭐ ADD TO SEQUENTIAL QUEUE (not immediate execution!)
+            downloadQueue.add({
+                downloadId: downloadId,
+                videoUrl: videoUrl,
+                outputPath: outputPath,
+                download: download,
+                video: video,
+                batchIndex: i,
+                totalInBatch: videos.length,
+                title: video.title || `Video ${i + 1}`
+            });
         }
         
-        console.log('[Batch Download] ✅ Queued', jobIds.length, '/', videos.length, 'jobs');
-        console.log('[Batch Download] Errors:', errors.length);
-        console.log('='.repeat(80) + '\n');
+        const queueStatus = downloadQueue.getStatus();
+        
+        console.log('\n[Sequential Batch] ✅ All jobs added to sequential queue');
+        console.log(`   📊 Total jobs: ${jobIds.length}`);
+        console.log(`   ✅ To download: ${jobIds.length - errors.length - downloadQueue.stats.skipped}`);
+        console.log(`   ⏭️ Skipped (exist): ${downloadQueue.stats.skipped}`);
+        console.log(`   ❌ Errors: ${errors.length}`);
+        console.log(`   🔄 Currently processing: ${queueStatus.isProcessing ? 'YES' : 'NO'}`);
+        console.log(`   📋 Waiting in queue: ${queueStatus.queueLength}`);
+        console.log('='.repeat(80));
+        console.log('\n⚠️ NOTE: Videos will download SEQUENTIALLY (one at a time)');
+        console.log('   Watch console for: [#1], [#2], [#3]... as each completes\n');
         
         res.status(202).json({
             success: true,
-            message: `Queued ${jobIds.length} downloads`,
+            message: `${jobIds.length} jobs queued for SEQUENTIAL download (one at a time)`,
+            mode: 'sequential',
             jobsCreated: jobIds.length,
             totalRequested: videos.length,
             errors: errors,
             jobIds: jobIds,
-            estimatedTime: `${Math.ceil(videos.length * 15 / 60)} minutes` // Rough estimate
+            queueStatus: queueStatus,
+            estimatedTime: `${Math.ceil((jobIds.length - errors.length - downloadQueue.stats.skipped) * 20 / 60)} min`,
+            note: 'Downloads will process one after another automatically'
         });
 
     } catch (error) {
