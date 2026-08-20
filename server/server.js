@@ -628,11 +628,19 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
     return new Promise((resolve) => {
         console.log('[Download] Starting:', title);
         
+        // Log the actual command for debugging
+        console.log('[Download] Command:', command.substring(0, 150) + '...');
+        
         const childProcess = spawn(command, [], { shell: true });
         childProcessMap.set(jobId, childProcess);
         
+        // Capture full error output for debugging
+        let errorOutput = '';
+        let stdoutOutput = '';
+        
         childProcess.stdout.on('data', (data) => {
             const output = data.toString();
+            stdoutOutput += output;
             
             const percentMatch = output.match(/(\d+\.?\d*)%/);
             const speedMatch = output.match(/(\d+\.?\d*\s*(?:KB|MB|GB)\/s)/);
@@ -651,6 +659,7 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
         
         childProcess.stderr.on('data', (data) => {
             const output = data.toString();
+            errorOutput += output;  // Capture for error reporting
             
             const percentMatch = output.match(/(\d+\.?\d*)%/);
             const speedMatch = output.match(/(\d+\.?\d*\s*(?:KB|MB|GB)\/s)/);
@@ -681,15 +690,50 @@ function executeSingleDownload(command, jobId, videoId, title, channelId, finalP
                 
                 resolve({ success: true });
             } else {
-                console.error('[Download] ❌ Failed:', title, '- Exit code:', code);
+                // Extract meaningful error from yt-dlp output
+                let errorMessage = `Exit code: ${code}`;
+                
+                if (errorOutput) {
+                    // Find the actual error reason
+                    const errorLines = errorOutput.split('\n').filter(l => l.trim());
+                    
+                    // Look for common yt-dlp errors
+                    for (const line of errorLines) {
+                        if (line.includes('ERROR:') || 
+                            line.includes('Sign in') ||
+                            line.includes('age') ||
+                            line.includes('region') ||
+                            line.includes('unavailable') ||
+                            line.includes('copyright') ||
+                            line.includes('private') ||
+                            line.includes('deleted')) {
+                            
+                            errorMessage = line.trim().substring(0, 200);  // Limit length
+                            break;
+                        }
+                    }
+                    
+                    // If no specific error found, use last few lines
+                    if (errorMessage === `Exit code: ${code}`) {
+                        const lastLines = errorLines.slice(-3).join('; ');
+                        if (lastLines) {
+                            errorMessage = `${code}: ${lastLines.substring(0, 150)}`;
+                        }
+                    }
+                }
+                
+                console.error('[Download] ❌ Failed:', title);
+                console.error('[Download] Reason:', errorMessage);
+                console.error('[Download] Error details:', errorOutput.substring(0, 500));
                 
                 if (activeDownloads.has(jobId)) {
                     const download = activeDownloads.get(jobId);
                     download.status = 'error';
-                    download.error = `Exit code: ${code}`;
+                    download.error = errorMessage;
+                    download.errorDetails = errorOutput.substring(0, 1000);
                 }
                 
-                resolve({ success: false, error: `Exit code: ${code}` });
+                resolve({ success: false, error: errorMessage });
             }
         });
         
@@ -734,22 +778,27 @@ app.post('/api/download', async function(req, res) {
     switch (format) {
         case 'mp3':
             formatExt = 'mp3';
-            formatOptions = '-x --audio-format mp3 --audio-quality 0';
+            formatOptions = '-x --audio-format mp3';
             break;
         case 'm4a':
             formatExt = 'm4a';
-            formatOptions = '-x --audio-format m4a --audio-quality 0';
+            formatOptions = '-x --audio-format m4a';
             break;
         case 'webm':
             formatExt = 'webm';
-            formatOptions = '--format webm';
+            formatOptions = '--format bestaudio/best --merge-output-format webm';
             break;
         default:
+            // SIMPLIFIED: Use 'best' format to avoid merge errors
+            // This is more reliable than trying to merge video+audio
             formatExt = 'mp4';
-            if (quality && quality !== 'best') {
-                formatOptions = `"bestvideo[height<=${quality}]+bestaudio/best[height<=${quality}]/best" --merge-output-format mp4`;
+            
+            if (quality && quality !== 'best' && quality !== '1080') {
+                // For lower qualities, use simple format selector
+                formatOptions = `--format "best[height<=${quality}]/best"`;
             } else {
-                formatOptions = 'bestvideo+bestaudio/best --merge-output-format mp4';
+                // Default: just get the best available (let yt-dlp decide)
+                formatOptions = '--format best';
             }
     }
     
