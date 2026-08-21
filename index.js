@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════╗
  * ║  YouTube CHANNEL Downloader - Cloudflare Worker                          ║
- * ║  Version: 10.0.0 - Client-Side Scraping (No APIs Needed)                  ║
+ * ║  Version: 10.0.0 - Client-Side Scraping (No APIs)                    ║
  * ╚═══════════════════════════════════════════════════════════════════════════╝
  * 
  * ✅ FEATURES:
@@ -697,138 +697,7 @@ async function resolveChannelId(channelInfo) {
 }
 
 /**
- * Parse YouTube RSS Feed XML and extract channel info + videos
- * This is the PRIMARY method since Invidious APIs are often blocked
- */
-async function getChannelFromRSS(channelInfo) {
-  let feedUrl;
-  
-  // Build RSS URL based on channel type
-  if (channelInfo.type === 'user') {
-    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?user=${encodeURIComponent(channelInfo.id)}`;
-  } else if (channelInfo.type === 'channel') {
-    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?channel_id=${encodeURIComponent(channelInfo.id)}`;
-  } else if (channelInfo.type === 'handle') {
-    // For handles, try the /@handle format which sometimes works
-    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?channel_id=${encodeURIComponent('@' + channelInfo.id)}`;
-  } else {
-    // Custom/legacy URLs - try as user
-    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?user=${encodeURIComponent(channelInfo.id)}`;
-  }
-  
-  console.log(`📡 Trying RSS feed: ${feedUrl}`);
-  
-  try {
-    const response = await fetch(feedUrl, {
-      signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT),
-      headers: { 'Accept': 'application/xml, application/atom+xml, */*' }
-    });
-    
-    if (!response.ok) {
-      console.log(`RSS feed returned ${response.status}`);
-      return null;
-    }
-    
-    const xmlText = await response.text();
-    
-    // Check if it's actually XML (not an error page)
-    if (!xmlText.includes('<feed') && !xmlText.includes('<?xml')) {
-      console.log('RSS response is not valid XML');
-      return null;
-    }
-    
-    // Parse the XML
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-    
-    // Extract channel info from feed
-    const titleEl = xmlDoc.querySelector('title');
-    const channelIdEl = xmlDoc.querySelector('yt\\:channelId, channelId');
-    const authorNameEl = xmlDoc.querySelector('author > name');
-    const authorUriEl = xmlDoc.querySelector('author > uri');
-    const publishedEl = xmlDoc.querySelector('published');
-    
-    const channelName = titleEl ? titleEl.textContent : channelInfo.id;
-    const rssChannelId = channelIdEl ? channelIdEl.textContent : '';
-    const authorName = authorNameEl ? authorNameEl.textContent : channelName;
-    const authorUri = authorUriEl ? authorUriEl.textContent : '';
-    
-    // Extract all video entries
-    const entries = xmlDoc.querySelectorAll('entry');
-    const videos = [];
-    
-    entries.forEach(entry => {
-      const videoIdEl = entry.querySelector('yt\\:videoId, videoId');
-      const videoTitleEl = entry.querySelector('title');
-      const publishedEl = entry.querySelector('published');
-      const updatedEl = entry.querySelector('updated');
-      const descEl = entry.querySelector('media\\:group > media\\:description, media\\:description');
-      const thumbEl = entry.querySelector('media\\:group > media\\:thumbnail, media\\:thumbnail');
-      
-      if (videoIdEl) {
-        const videoId = videoIdEl.textContent;
-        videos.push({
-          videoId: videoId,
-          title: videoTitleEl ? videoTitleEl.textContent : 'Untitled',
-          thumbnail: thumbEl ? thumbEl.getAttribute('url') : `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
-          author: authorName,
-          authorId: rssChannelId,
-          lengthSeconds: 0, // RSS doesn't provide duration
-          viewCount: 0, // RSS doesn't provide views
-          publishedText: publishedEl ? formatRSSDate(publishedEl.textContent) : '',
-          url: `https://www.youtube.com/watch?v=${videoId}`,
-          description: descEl ? descEl.textContent : ''
-        });
-      }
-    });
-    
-    console.log(`✅ RSS Feed success! Found ${videos.length} videos for "${channelName}"`);
-    
-    return {
-      id: rssChannelId || channelInfo.id,
-      name: channelName,
-      avatar: '', // RSS doesn't provide avatar
-      banner: '',
-      description: `Channel: ${authorName}`,
-      subscriberCount: 0, // RSS doesn't provide subscribers
-      videoCount: videos.length,
-      viewCount: 0,
-      joined: publishedEl ? new Date(publishedEl.textContent).getTime() : Date.now(),
-      videos: videos.slice(0, CONFIG.MAX_CHANNEL_VIDEOS), // Limit videos
-      source: 'youtube-rss',
-      isRSS: true
-    };
-    
-  } catch (e) {
-    console.warn('RSS feed error:', e.message.substring(0, 100));
-    return null;
-  }
-}
-
-/**
- * Format RSS date to relative text
- */
-function formatRSSDate(dateStr) {
-  try {
-    const date = new Date(dateStr);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7) return `${diffDays} days ago`;
-    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
-    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
-    return `${Math.floor(diffDays / 365)} years ago`;
-  } catch {
-    return '';
-  }
-}
-
-/**
  * Get channel information with multiple fallbacks
- * Priority: YouTube RSS Feed → Invidious APIs → Fallback mode
  */
 async function getChannelInfo(channelUrl) {
   const channelInfo = extractChannelInfo(channelUrl);
@@ -842,16 +711,7 @@ async function getChannelInfo(channelUrl) {
     channelId = channelInfo.id;
   }
   
-  // Method 1: Try YouTube RSS Feed FIRST (most reliable!)
-  console.log('🔄 Method 1: Trying YouTube RSS Feed...');
-  const rssResult = await getChannelFromRSS(channelInfo);
-  if (rssResult && rssResult.videos.length > 0) {
-    console.log(`✅ Got channel info from RSS with ${rssResult.videos.length} videos!`);
-    return rssResult;
-  }
-  
-  // Method 2: Try Invidious APIs
-  console.log('🔄 Method 2: Trying Invidious APIs...');
+  // Method 1: Try Invidious APIs
   for (const apiBase of CONFIG.APIS) {
     try {
       const apiUrl = `${apiBase}/api/v1/channels/${channelId}`;
@@ -882,8 +742,8 @@ async function getChannelInfo(channelUrl) {
     }
   }
   
-  // Method 3: Fallback - Return basic info from URL (works even without APIs)
-  console.log('⚠️ All methods failed, using fallback mode');
+  // Method 2: Fallback - Return basic info from URL (works even without APIs)
+  console.log('⚠️ All APIs failed, using fallback mode');
   
   const displayName = channelInfo.type === 'handle' 
     ? channelInfo.id.replace('@', '') 
@@ -891,17 +751,17 @@ async function getChannelInfo(channelUrl) {
     
   return {
     id: channelId,
-    name: displayName,
-    avatar: '',
+    name: displayName, // Extract name from handle/URL
+    avatar: '', // No avatar available without API
     banner: '',
-    description: 'Channel information temporarily unavailable. Using limited mode.',
+    description: 'Channel information temporarily unavailable',
     subscriberCount: 0,
     videoCount: 0,
     viewCount: 0,
     joined: Date.now(),
     videos: [],
     source: 'fallback',
-    isFallback: true
+    isFallback: true // Flag to indicate this is fallback data
   };
 }
 
@@ -1432,7 +1292,7 @@ async function fetchChannel(){
   hideVideos();
   
   try{
-    // NEW APPROACH: Client-side direct scraping (uses your YouTube session)
+    // NEW: Client-side direct scraping (uses browser's YouTube session)
     showLoading(true,'Scraping YouTube directly...');
     
     const result = await scrapeYouTubeChannelDirect(url);
@@ -1444,7 +1304,7 @@ async function fetchChannel(){
     // Show channel info
     const channel = {
       name: result.channelName,
-      description: `Found ${result.videos.length} videos`,
+      description: 'Found ' + result.videos.length + ' videos',
       subscriberCount: 0,
       videoCount: result.videos.length,
       viewCount: 0,
@@ -1469,41 +1329,37 @@ async function fetchChannel(){
 }
 
 /**
- * SCRAPE YOUTUBE DIRECTLY (Client-Side)
- * This bypasses ALL APIs by using your browser's existing YouTube session
+ * SCRAPE YOUTUBE DIRECTLY (Client-Side) - No APIs needed!
+ * Uses your browser's existing YouTube session/cookies
  */
 async function scrapeYouTubeChannelDirect(channelUrl) {
   try {
-    // Normalize URL to get the channel page
     let scrapeUrl = normalizeChannelUrl(channelUrl);
     
     console.log('[Client-Scrape] Fetching:', scrapeUrl);
     
-    // Fetch the YouTube page directly (browser has cookies!)
     const response = await fetch(scrapeUrl, {
       method: 'GET',
       headers: {
         'Accept': 'text/html,application/xhtml+xml',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
-      credentials: 'include' // Send cookies!
+      credentials: 'include'
     });
     
     if (!response.ok) {
-      throw new Error(`YouTube returned HTTP ${response.status}`);
+      throw new Error('YouTube returned HTTP ' + response.status);
     }
     
     const html = await response.text();
-    
-    // Extract ytInitialData from the page
     const videos = extractVideosFromHTML(html);
     const channelName = extractChannelNameFromHTML(html);
     
-    console.log(`[Client-Scrape] Found ${videos.length} videos for "${channelName}"`);
+    console.log('[Client-Scrape] Found ' + videos.length + ' videos for "' + channelName + '"');
     
     return {
-      channelName,
-      videos: videos.slice(0, 100), // Limit to 100 videos
+      channelName: channelName,
+      videos: videos.slice(0, 100),
       source: 'direct-scrape'
     };
     
@@ -1514,42 +1370,29 @@ async function scrapeYouTubeChannelDirect(channelUrl) {
 }
 
 /**
- * Normalize various YouTube channel URL formats to a standard format
+ * Normalize YouTube channel URL to /videos page
  */
 function normalizeChannelUrl(url) {
-  // Handle @handle URLs
   if (url.includes('youtube.com/@')) {
     const handle = url.match(/youtube\.com\/@([^/?]+)/);
-    if (handle) {
-      return `https://www.youtube.com/@${handle[1]}/videos`;
-    }
+    if (handle) return 'https://www.youtube.com/@' + handle[1] + '/videos';
   }
   
-  // Handle /c/ custom URLs
   if (url.includes('/c/')) {
     const custom = url.match(/\/c\/([^/?]+)/);
-    if (custom) {
-      return `https://www.youtube.com/c/${custom[1]}/videos`;
-    }
+    if (custom) return 'https://www.youtube.com/c/' + custom[1] + '/videos';
   }
   
-  // Handle /channel/ IDs
   if (url.includes('/channel/')) {
     const channelId = url.match(/\/channel\/([a-zA-Z0-9_-]+)/);
-    if (channelId) {
-      return `https://www.youtube.com/channel/${channelId[1]}/videos`;
-    }
+    if (channelId) return 'https://www.youtube.com/channel/' + channelId[1] + '/videos';
   }
   
-  // Handle /user/ names
   if (url.includes('/user/')) {
     const userName = url.match(/\/user\/([^/?]+)/);
-    if (userName) {
-      return `https://www.youtube.com/user/${userName[1]}/videos`;
-    }
+    if (userName) return 'https://www.youtube.com/user/' + userName[1] + '/videos';
   }
   
-  // Default: append /videos if not already there
   if (!url.includes('/videos')) {
     return url.replace(/\/?$/, '/videos');
   }
@@ -1558,17 +1401,15 @@ function normalizeChannelUrl(url) {
 }
 
 /**
- * Extract video data from YouTube's embedded JSON (ytInitialData)
+ * Extract video data from YouTube's ytInitialData JSON
  */
 function extractVideosFromHTML(html) {
   const videos = [];
   
   try {
-    // Method 1: Find ytInitialData
     let ytDataMatch = html.match(/var ytInitialData\s*=\s*({.*?});\s*(?:var|<\/script>)/s);
     
     if (!ytDataMatch) {
-      // Method 2: Try finding it differently
       ytDataMatch = html.match(/ytInitialData"\s*,\s*({.*?})\s*\)\;/s);
     }
     
@@ -1576,49 +1417,81 @@ function extractVideosFromHTML(html) {
       const jsonStr = ytDataMatch[1];
       const data = JSON.parse(jsonStr);
       
-      // Navigate YouTube's complex JSON structure to find videos
       const contents = findVideoContents(data);
       
-      contents.forEach(item => {
+      contents.forEach(function(item) {
         const videoId = item.videoId;
         if (videoId) {
+          var title = 'Untitled';
+          if (item.title) {
+            if (item.title.runs && item.title.runs[0]) title = item.title.runs[0].text;
+            else if (item.title.simpleText) title = item.title.simpleText;
+          }
+          
+          var author = '';
+          if (item.longBylineText && item.longBylineText.runs && item.longBylineText.runs[0]) {
+            author = item.longBylineText.runs[0].text;
+          }
+          
+          var duration = 0;
+          if (item.lengthText) {
+            var durText = item.lengthText.simpleText || '';
+            if (item.lengthText.runs && item.lengthText.runs[0]) durText = item.lengthText.runs[0].text;
+            var parts = durText.split(':').reverse();
+            parts.forEach(function(p, i) { duration += parseInt(p) * Math.pow(60, i); });
+          }
+          
+          var views = 0;
+          if (item.viewCountText && item.viewCountText.simpleText) {
+            var vMatch = item.viewCountText.simpleText.match(/([\d.]+)([KMB]?)/);
+            if (vMatch) {
+              var mult = {'':1,'K':1000,'M':1000000,'B':1000000000};
+              views = Math.floor(parseFloat(vMatch[1]) * (mult[vMatch[2]] || 1));
+            }
+          }
+          
+          var pubText = '';
+          if (item.publishedTimeText && item.publishedTimeText.simpleText) {
+            pubText = item.publishedTimeText.simpleText;
+          }
+          
           videos.push({
             videoId: videoId,
-            title: item.title?.runs?.[0]?.text || item.title?.simpleText || 'Untitled',
-            thumbnail: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
-            author: item.longBylineText?.runs?.[0]?.text || '',
+            title: title,
+            thumbnail: 'https://i.ytimg.com/vi/' + videoId + '/mqdefault.jpg',
+            author: author,
             authorId: '',
-            lengthSeconds: parseDuration(item.lengthText),
-            viewCount: parseViewCount(item.viewCountText),
-            publishedText: item.publishedTimeText?.simpleText || '',
-            url: `https://www.youtube.com/watch?v=${videoId}`,
+            lengthSeconds: duration,
+            viewCount: views,
+            publishedText: pubText,
+            url: 'https://www.youtube.com/watch?v=' + videoId,
             description: ''
           });
         }
       });
     }
     
-    // Method 3: Fallback - regex for video IDs in the HTML
+    // Fallback: regex for video IDs
     if (videos.length === 0) {
       console.log('[Client-Scrape] Trying regex fallback...');
-      const videoIdRegex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
-      let match;
-      const seenIds = new Set();
+      var videoIdRegex = /"videoId":"([a-zA-Z0-9_-]{11})"/g;
+      var match;
+      var seenIds = {};
       
       while ((match = videoIdRegex.exec(html)) !== null) {
-        const vidId = match[1];
-        if (!seenIds.has(vidId) && videos.length < 50) {
-          seenIds.add(vidId);
+        var vidId = match[1];
+        if (!seenIds[vidId] && videos.length < 50) {
+          seenIds[vidId] = true;
           videos.push({
             videoId: vidId,
-            title: `Video ${videos.length + 1}`,
-            thumbnail: `https://i.ytimg.com/vi/${vidId}/mqdefault.jpg`,
+            title: 'Video ' + (videos.length + 1),
+            thumbnail: 'https://i.ytimg.com/vi/' + vidId + '/mqdefault.jpg',
             author: '',
             authorId: '',
             lengthSeconds: 0,
             viewCount: 0,
             publishedText: '',
-            url: `https://www.youtube.com/watch?v=${vidId}`,
+            url: 'https://www.youtube.com/watch?v=' + vidId,
             description: ''
           });
         }
@@ -1633,29 +1506,27 @@ function extractVideosFromHTML(html) {
 }
 
 /**
- * Navigate YouTube's nested JSON structure to find video items
+ * Navigate YouTube's nested JSON to find video items
  */
-function findVideoContents(data, depth = 0) {
-  const results = [];
+function findVideoContents(data, depth) {
+  depth = depth || 0;
+  var results = [];
   
   if (depth > 15 || !data || typeof data !== 'object') return results;
   
-  // Check if this is a video renderer
   if (data.videoId && (data.title || data.lengthText)) {
     results.push(data);
     return results;
   }
   
-  // Look for gridRenderer or itemSectionRenderer contents
   if (data.contents && Array.isArray(data.contents)) {
-    for (const item of data.contents) {
-      results.push(...findVideoContents(item, depth + 1));
-    }
+    data.contents.forEach(function(item) {
+      results = results.concat(findVideoContents(item, depth + 1));
+    });
   }
   
-  // Look for richItemRenderer or videoRenderer
   if (data.richItemRenderer) {
-    results.push(...findVideoContents(data.richItemRenderer.content, depth + 1));
+    results = results.concat(findVideoContents(data.richItemRenderer.content, depth + 1));
   }
   
   if (data.videoRenderer) {
@@ -1666,12 +1537,11 @@ function findVideoContents(data, depth = 0) {
     results.push(data.gridVideoRenderer);
   }
   
-  // Recurse through other arrays
-  for (const key of Object.keys(data)) {
+  for (var key in data) {
     if (Array.isArray(data[key])) {
-      for (const item of data[key]) {
-        results.push(...findVideoContents(item, depth + 1));
-      }
+      data[key].forEach(function(item) {
+        results = results.concat(findVideoContents(item, depth + 1));
+      });
     }
   }
   
@@ -1679,58 +1549,21 @@ function findVideoContents(data, depth = 0) {
 }
 
 /**
- * Extract channel name from HTML
+ * Extract channel name from HTML page
  */
 function extractChannelNameFromHTML(html) {
-  // Try to find channel name in various places
-  const patterns = [
+  var patterns = [
     /<title>([^<]*?) - YouTube<\/title>/,
     /"channelName":"([^"]+)"/,
     /"name":\s*"([^"]+)"[^}]*?"type":"CHANNEL"/
   ];
   
-  for (const pattern of patterns) {
-    const match = html.match(pattern);
-    if (match) {
-      return match[1].trim();
-    }
+  for (var i = 0; i < patterns.length; i++) {
+    var match = html.match(patterns[i]);
+    if (match) return match[1].trim();
   }
   
   return 'YouTube Channel';
-}
-
-/**
- * Parse duration text like "10:30" to seconds
- */
-function parseDuration(durationObj) {
-  if (!durationObj) return 0;
-  
-  const text = durationObj.simpleText || (durationObj.runs && durationObj.runs[0]?.text) || '';
-  const parts = text.split(':').reverse();
-  
-  let seconds = 0;
-  parts.forEach((part, i) => {
-    seconds += parseInt(part) * Math.pow(60, i);
-  });
-  
-  return seconds;
-}
-
-/**
- * Parse view count like "1.2M views" to number
- */
-function parseViewCount(viewObj) {
-  if (!viewObj) return 0;
-  
-  const text = viewObj.simpleText || '';
-  const match = text.match(/([\d.]+)([KMB]?)/);
-  
-  if (!match) return 0;
-  
-  const num = parseFloat(match[1]);
-  const multiplier = { '': 1, 'K': 1000, 'M': 1000000, 'B': 1000000000 };
-  
-  return Math.floor(num * (multiplier[match[2]] || 1));
 }
 
 function isValidChannelUrl(u){
