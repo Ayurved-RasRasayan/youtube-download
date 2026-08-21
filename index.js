@@ -1618,28 +1618,38 @@ export default {
 
       // Get channel info
       if (pathname === '/api/channel/info') {
-        const { url: channelUrl } = await request.json();
-        if (!channelUrl) return errorResponse('Channel URL is required');
-        
-        const channelInfo = extractChannelInfo(channelUrl);
-        if (!channelInfo) return errorResponse('Invalid channel URL format. Use: @handle, /c/, /channel/, or /user/');
-        
-        const info = await getChannelInfo(channelUrl);
-        return jsonResponse({ ok: true, data: info });
+        try {
+          const { url: channelUrl } = await request.json();
+          if (!channelUrl) return errorResponse('Channel URL is required');
+          
+          const channelInfo = extractChannelInfo(channelUrl);
+          if (!channelInfo) return errorResponse('Invalid channel URL format. Use: @handle, /c/, /channel/, or /user/');
+          
+          const info = await getChannelInfo(channelUrl);
+          return jsonResponse({ ok: true, data: info });
+        } catch (error) {
+          console.error('Channel info error:', error.message);
+          return errorResponse(`Failed to fetch channel info: ${error.message}. The Invidious APIs may be temporarily unavailable. Please try again in a few minutes.`);
+        }
       }
 
       // Get all videos from channel
       if (pathname === '/api/channel/videos') {
-        const { channelId } = await request.json();
-        if (!channelId) return errorResponse('Channel ID is required');
-        
-        const videos = await getAllChannelVideos(channelId);
-        return jsonResponse({ 
-          ok: true, 
-          videos, 
-          count: videos.length,
-          message: `Found ${videos.length} videos`
-        });
+        try {
+          const { channelId } = await request.json();
+          if (!channelId) return errorResponse('Channel ID is required');
+          
+          const videos = await getAllChannelVideos(channelId);
+          return jsonResponse({ 
+            ok: true, 
+            videos, 
+            count: videos.length,
+            message: `Found ${videos.length} videos`
+          });
+        } catch (error) {
+          console.error('Channel videos error:', error.message);
+          return errorResponse(`Failed to fetch videos: ${error.message}. Please try again.`);
+        }
       }
 
       // ===========================
