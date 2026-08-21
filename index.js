@@ -18,24 +18,33 @@
 // =============================================================================
 
 const CONFIG = {
-  VERSION: '8.0.0',
-  MAX_CONCURRENT: 3, // Reduced for channel downloads
-  MAX_CHANNEL_VIDEOS: 100, // Max videos to fetch per channel
+  VERSION: '8.1.0',
+  MAX_CONCURRENT: 3,
+  MAX_CHANNEL_VIDEOS: 100,
   RETRY_ATTEMPTS: 3,
   INFO_TIMEOUT: 15000,
   DOWNLOAD_TIMEOUT: 300000,
   
-  // Invidious API instances (updated August 2026 - tested working)
+  // Multiple API sources with fallbacks (try in order)
   APIS: [
+    // Primary Invidious instances
     'https://inv.nadeko.net',
     'https://invidious.nerdvpn.de',
     'https://invidious.f5.si',
-    'https://yt.chocolatemoo53.com'
+    'https://yt.chocolatemoo53.com',
+    // Backup instances
+    'https://invidious.privacyredirect.com',
+    'https://vid.puffyan.us',
+    'https://invidious.snopyta.org',
+    // More fallbacks
+    'https://invidious.kavin.rocks',
+    'https://inv.tux.pizza'
   ],
   
   YOUTUBE: {
     OEMBED: 'https://www.youtube.com/oembed',
-    THUMBNAIL: 'https://img.youtube.com/vi'
+    THUMBNAIL: 'https://img.youtube.com/vi',
+    FEEDS: 'https://www.youtube.com/feeds/videos.xml'
   }
 };
 
@@ -688,27 +697,23 @@ async function resolveChannelId(channelInfo) {
 }
 
 /**
- * Get channel information
+ * Get channel information with multiple fallbacks
  */
 async function getChannelInfo(channelUrl) {
   const channelInfo = extractChannelInfo(channelUrl);
   if (!channelInfo) throw new Error('Invalid channel URL format');
   
-  // Try each API instance
+  // Build channel ID for API calls
+  let channelId;
+  if (channelInfo.type === 'handle') {
+    channelId = `@${channelInfo.id}`;
+  } else {
+    channelId = channelInfo.id;
+  }
+  
+  // Method 1: Try Invidious APIs
   for (const apiBase of CONFIG.APIS) {
     try {
-      // Build channel API URL based on type
-      let channelId;
-      if (channelInfo.type === 'handle') {
-        channelId = `@${channelInfo.id}`;
-      } else if (channelInfo.type === 'channel') {
-        channelId = channelInfo.id;
-      } else if (channelInfo.type === 'user') {
-        channelId = channelInfo.id;
-      } else {
-        channelId = channelInfo.id;
-      }
-      
       const apiUrl = `${apiBase}/api/v1/channels/${channelId}`;
       const response = await fetch(apiUrl, {
         signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
@@ -716,9 +721,10 @@ async function getChannelInfo(channelUrl) {
       
       if (response.ok) {
         const data = await response.json();
+        console.log(`✅ Channel info from ${apiBase}`);
         return {
-          id: data.authorId,
-          name: data.author,
+          id: data.authorId || channelId,
+          name: data.author || channelInfo.id,
           avatar: data.authorThumbnails?.[2]?.url || data.authorThumbnails?.[0]?.url || '',
           banner: data.authorBanners?.[0]?.url || '',
           description: data.description || '',
@@ -731,12 +737,32 @@ async function getChannelInfo(channelUrl) {
         };
       }
     } catch (e) {
-      console.warn(`Channel info failed on ${apiBase}:`, e.message);
+      console.warn(`API ${apiBase} failed:`, e.message.substring(0, 50));
       continue;
     }
   }
   
-  throw new Error('Could not fetch channel info from any API');
+  // Method 2: Fallback - Return basic info from URL (works even without APIs)
+  console.log('⚠️ All APIs failed, using fallback mode');
+  
+  const displayName = channelInfo.type === 'handle' 
+    ? channelInfo.id.replace('@', '') 
+    : channelInfo.id;
+    
+  return {
+    id: channelId,
+    name: displayName, // Extract name from handle/URL
+    avatar: '', // No avatar available without API
+    banner: '',
+    description: 'Channel information temporarily unavailable',
+    subscriberCount: 0,
+    videoCount: 0,
+    viewCount: 0,
+    joined: Date.now(),
+    videos: [],
+    source: 'fallback',
+    isFallback: true // Flag to indicate this is fallback data
+  };
 }
 
 /**
@@ -775,6 +801,8 @@ async function getChannelVideos(channelId, page = 1, existingVideos = []) {
         
         allVideos.push(...parsedVideos);
         
+        console.log(`✅ Got ${parsedVideos.length} videos from ${apiBase}`);
+        
         // Check if we have more videos and haven't hit limit
         const hasMore = videos.length >= 30 && allVideos.length < CONFIG.MAX_CHANNEL_VIDEOS;
         
@@ -786,12 +814,19 @@ async function getChannelVideos(channelId, page = 1, existingVideos = []) {
         };
       }
     } catch (e) {
-      console.warn(`Channel videos failed on ${apiBase}:`, e.message);
+      console.warn(`Channel videos failed on ${apiBase}:`, e.message.substring(0, 50));
       continue;
     }
   }
   
-  return { videos: allVideos, hasMore: false, error: 'All APIs failed' };
+  // Fallback: Return empty array with flag indicating API failure
+  console.log('⚠️ All APIs failed for videos');
+  return { 
+    videos: [], 
+    hasMore: false, 
+    error: 'APIs unavailable',
+    isFallback: true 
+  };
 }
 
 /**
