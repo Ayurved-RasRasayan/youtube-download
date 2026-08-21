@@ -808,8 +808,25 @@
             btn.innerHTML = '<span class="spinner"></span>Loading...';
 
             try {
-                // Determine if it's a URL or username
-                const url = input.startsWith('http') ? input : `https://www.youtube.com/${input}`;
+                // ⭐ SMART URL DETECTION - Handle all input formats
+                let url = input;
+                
+                // Case 1: Already a full URL (starts with http:// or https://)
+                if (input.toLowerCase().startsWith('http://') || input.toLowerCase().startsWith('https://')) {
+                    url = input;
+                }
+                // Case 2: Contains youtube.com but no protocol
+                else if (input.includes('youtube.com') || input.includes('youtu.be')) {
+                    url = 'https://' + input.replace(/^\/\//, '');  // Add https, remove double slashes
+                }
+                // Case 3: Just @username or username
+                else {
+                    const username = input.startsWith('@') ? input : '@' + input;
+                    url = `https://www.youtube.com/${username}`;
+                }
+                
+                console.log('[loadChannel] Input:', input);
+                console.log('[loadChannel] Processed URL:', url);
                 
                 const response = await fetch(`${API_BASE}/api/channels`, {
                     method: 'POST',

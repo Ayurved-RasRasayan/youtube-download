@@ -2113,8 +2113,33 @@ app.post('/api/channels', async (req, res) => {
         }
 
         // Determine the channel URL
-        const channelUrl = url || `https://www.youtube.com/@${channelId}`;
-        const channelIdFinal = channelId || url.split('@').pop().split('/')[0];
+        // ⭐ SMART URL CLEANUP - Fix doubled/malformed URLs
+        let channelUrl = url || `https://www.youtube.com/@${channelId}`;
+        
+        // Fix common URL issues:
+        // 1. Double youtube.com: https://www.youtube.com/www.youtube.com/@user
+        // 2. Missing protocol: www.youtube.com/@user
+        // 3. Extra slashes: https://www.youtube.com//@user
+        
+        if (channelUrl) {
+            // Remove double youtube.com occurrences
+            while (channelUrl.includes('youtube.com/youtube.com/') || 
+                   channelUrl.includes('youtube.com/www.youtube.com/')) {
+                channelUrl = channelUrl.replace(/youtube\.com\/(www\.)?youtube\.com\//, 'youtube.com/');
+                console.log('[Channels] 🔧 Fixed doubled URL');
+            }
+            
+            // Ensure protocol exists
+            if (!channelUrl.startsWith('http://') && !channelUrl.startsWith('https://')) {
+                channelUrl = 'https://' + channelUrl.replace(/^\/\//, '');
+                console.log('[Channels] 🔧 Added missing protocol');
+            }
+            
+            // Remove double slashes (but keep https://)
+            channelUrl = channelUrl.replace(/([^:])\/{2,}/g, '$1/');
+        }
+        
+        const channelIdFinal = channelId || channelUrl.split('@').pop().split('/')[0];
         
         console.log('[Channels] Processing channel:');
         console.log('   - URL:', channelUrl);
