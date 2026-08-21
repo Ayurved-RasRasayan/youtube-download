@@ -25,14 +25,12 @@ const CONFIG = {
   INFO_TIMEOUT: 15000,
   DOWNLOAD_TIMEOUT: 300000,
   
-  // Invidious API instances (tried in order until one works)
+  // Invidious API instances (updated August 2026 - tested working)
   APIS: [
-    'https://yt.lemnoslife.com',
     'https://inv.nadeko.net',
-    'https://invidious.fdn.fr',
-    'https://vid.puffyan.us',
-    'https://invidious.snopyta.org',
-    'https://invidious.kavin.rocks'
+    'https://invidious.nerdvpn.de',
+    'https://invidious.f5.si',
+    'https://yt.chocolatemoo53.com'
   ],
   
   YOUTUBE: {
