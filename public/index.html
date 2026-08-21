@@ -1207,43 +1207,74 @@
             input.click();
         }
         
-        function setFolderPreset(preset) {
+        async function setFolderPreset(preset) {
             const currentValue = document.getElementById('downloadsDirInput').value;
             
             let homeDir = '';
             const winMatch = currentValue.match(/^(C:\\Users\\[^\\]+\\)/);
             const linuxMatch = currentValue.match(/^(\/home\/[^\/]+\/)/);
             
-            if (winMatch) {
+            // ⭐ IMPROVED: Try harder to detect home directory
+            if (!winMatch && !linuxMatch) {
+                // Try common Windows patterns from the current path
+                const anyWinPath = currentValue.match(/[A-Za-z]:\\/);
+                if (anyWinPath && currentValue.includes('Users')) {
+                    // Extract up to Users\Username\
+                    const userMatch = currentValue.match(/(C:\\Users\\[^\\]+\\)/i);
+                    if (userMatch) {
+                        homeDir = userMatch[1];
+                    }
+                }
+                
+                // Last resort: use default Windows pattern
+                if (!homeDir) {
+                    showAlert('⚠️ Could not detect user folder. Please type full path manually.<br>Example: <code>C:\\Users\\Jackle\\Downloads</code>', 'warning');
+                    return;
+                }
+            } else if (winMatch) {
                 homeDir = winMatch[1];
             } else if (linuxMatch) {
                 homeDir = linuxMatch[1];
-            } else {
-                showAlert('Please type the full path manually (e.g., C:\\Users\\YourName\\Downloads)', 'warning');
-                return;
             }
             
             let newPath;
+            let presetName = '';
             
             switch(preset) {
                 case 'downloads':
-                    newPath = homeDir + 'Downloads' + (winMatch ? '\\' : '/') + 'YouTube-Downloader';
+                    newPath = homeDir + 'Downloads' + (winMatch || anyWinPath ? '\\' : '/') + 'YouTube-Downloader';
+                    presetName = '📥 Downloads';
                     break;
                 case 'desktop':
-                    newPath = homeDir + 'Desktop' + (winMatch ? '\\' : '/') + 'YouTube-Downloads';
+                    newPath = homeDir + 'Desktop' + (winMatch || anyWinPath ? '\\' : '/') + 'YouTube-Downloads';
+                    presetName = '🖥️ Desktop';
                     break;
                 case 'videos':
-                    newPath = homeDir + 'Videos' + (winMatch ? '\\' : '/') + 'YouTube';
+                    newPath = homeDir + 'Videos' + (winMatch || anyWinPath ? '\\' : '/') + 'YouTube';
+                    presetName = '🎬 Videos';
                     break;
                 case 'documents':
-                    newPath = homeDir + 'Documents' + (winMatch ? '\\' : '/') + 'YouTube';
+                    newPath = homeDir + 'Documents' + (winMatch || anyWinPath ? '\\' : '/') + 'YouTube';
+                    presetName = '📄 Documents';
                     break;
                 default:
                     return;
             }
             
+            // Set the value in input field
             document.getElementById('downloadsDirInput').value = newPath;
-            showAlert(`Preset: ${preset}. Click "Save" to apply.`, 'info');
+            
+            // ⭐ NEW: Auto-save the preset!
+            showAlert(`📁 Setting ${presetName} folder...<br><code>${newPath}</code>`, 'info');
+            
+            try {
+                // Automatically call save function
+                await saveDownloadFolder();
+                showAlert(`✅ ${presetName} folder set and saved!<br>📂 ${newPath}`, 'success', 4000);
+            } catch (error) {
+                console.error('[Preset] Auto-save failed:', error);
+                showAlert(`⚠️ Preset applied but save failed:<br>${error.message}<br>Please click "💾 Save" manually.`, 'warning', 6000);
+            }
         }
 
         setTimeout(loadSettings, 1000);

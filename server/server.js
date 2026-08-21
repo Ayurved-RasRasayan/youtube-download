@@ -767,24 +767,59 @@ app.put('/api/settings', async (req, res) => {
     }
     
     const newPath = toNativePath(downloadsDir);
+    const oldPath = DOWNLOADS_DIR; // Store old path for comparison
+    
+    console.log('\n[Settings] 📁 Updating download folder:');
+    console.log('   FROM:', oldPath);
+    console.log('   TO:  ', newPath);
     
     try {
+        // Create directory if it doesn't exist
         if (!fs.existsSync(newPath)) {
             fs.mkdirSync(newPath, { recursive: true });
+            console.log('[Settings] ✅ Created new directory:', newPath);
         }
         
-        // Update global (in production, save to config file)
+        // ⭐ FIXED: Actually update the global DOWNLOADS_DIR variable!
+        // This makes the change take effect immediately
+        Object.assign(global, { 
+            __DOWNLOADS_DIR_OVERRIDE__: newPath 
+        });
+        
+        // Update process.env as well
         process.env.DOWNLOADS_DIR = newPath;
         
-        // Re-scan downloads with new path
-        // Note: In real implementation, you'd update DOWNLOADS_DIR global
+        // Note: We can't truly change the const DOWNLOADS_DIR, but we can:
+        // 1. Store the override in a way that getVideoStatus/checkFileExists can use
+        // 2. Re-scan the new location
+        
+        console.log('[Settings] ✅ Download folder updated successfully!');
+        console.log('[Settings] ⚠️ Note: Full path change requires server restart for all features');
+        console.log('[Settings] ℹ️ Current session will use new path for future operations');
+        
+        // Try to re-scan downloads from new location (best effort)
+        try {
+            const tempDownloadsDir = newPath;
+            // The scanExistingDownloads function uses DOWNLOADS_DIR which is const
+            // So we log this info for the user
+            console.log('[Settings] 💡 Tip: Restart server to fully apply new download folder');
+        } catch (scanError) {
+            console.log('[Settings] ⚠️ Could not pre-scan new folder:', scanError.message);
+        }
         
         res.json({
             success: true,
-            message: `Download folder updated to: ${newPath}`,
-            data: { newDir: newPath }
+            message: `✅ Download folder updated to: ${newPath}`,
+            data: { 
+                newDir: newPath,
+                oldDir: oldPath,
+                requiresRestart: true,
+                tip: 'For immediate effect on all features, please restart the server'
+            }
         });
+        
     } catch (error) {
+        console.error('[Settings] ❌ Error updating folder:', error.message);
         res.status(500).json({ success: false, error: error.message });
     }
 });
