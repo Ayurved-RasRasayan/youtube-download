@@ -1309,20 +1309,22 @@ function showVideos(videos){
   const grid=document.getElementById('videosGrid');
   document.getElementById('totalVideos').textContent=videos.length;
   
-  grid.innerHTML=videos.map((v,i)=>'<div class="video-card" id="card-'+i+'">'+
-    '<input type="checkbox" class="video-checkbox" value="'+i+'" onchange="toggleVideo('+i+')">'+
-    '<div class="video-thumb-wrap">'+
-      '<img class="video-thumb" src="'+esc(v.thumbnail)+'" alt="" loading="lazy" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22><rect fill=%22%23252550%22 width=%22320%22 height=%22180%22/><text fill=%22%23666%22 x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22>No Image</text></svg>\'">'+
-      '<span class="video-duration">'+fmtTime(v.lengthSeconds)+'</span>'+
-    '</div>'+
-    '<div class="video-info">'+
-      '<div class="video-title">'+esc(v.title)+'</div>'+
-      '<div class="video-meta">'+
-        '<span>'+formatNum(v.viewCount)+' views</span>'+
-        '<span>'+esc(v.publishedText)+'</span>'+
-      '</div>'+
-    '</div>'+
-  '</div>').join('');
+  grid.innerHTML=videos.map(function(v, i) {
+    return '<div class="video-card" id="card-' + i + '">' +
+      '<input type="checkbox" class="video-checkbox" value="' + i + '" onchange="toggleVideo(' + i + ')">' +
+      '<div class="video-thumb-wrap">' +
+        '<img class="video-thumb" src="' + esc(v.thumbnail) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML+=\'<div style=display:flex;align-items:center;justify-content:center;height:100%;background:#252550;color:#666>No Image</div>\';">' +
+        '<span class="video-duration">' + fmtTime(v.lengthSeconds) + '</span>' +
+      '</div>' +
+      '<div class="video-info">' +
+        '<div class="video-title">' + esc(v.title) + '</div>' +
+        '<div class="video-meta">' +
+          '<span>' + formatNum(v.viewCount) + ' views</span>' +
+          '<span>' + esc(v.publishedText) + '</span>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }).join('');
   
   document.getElementById('videosContainer').classList.add('show');
 }
@@ -1435,52 +1437,66 @@ function renderDownloads(downloads){
     return;
   }
   
-  list.innerHTML=downloads.map(d=>{
-    const isActive=['downloading','queued','retrying'].includes(d.status);
-    const isComplete=d.status==='completed'&&d.directUrl;
+  list.innerHTML=downloads.map(function(d) {
+    var isActive=['downloading','queued','retrying'].indexOf(d.status) !== -1;
+    var isComplete=d.status==='completed'&&d.directUrl;
     
-    return '<li class="download-item" id="dl-'+d.id+'">'+
-      '<div class="download-header">'+
-        '<div class="download-info">'+
-          '<div class="download-title">'+esc(d.title)+'</div>'+
-          '<div class="download-meta">'+(d.author||'')+' • '+timeAgo(d.createdAt)+'</div>'+
-        '</div>'+
-        '<span class="status-badge status-'+d.status+'">'+d.status+'</span>'+
-      '</div>'+
-      
-      (isActive?
-        '<div class="progress-container">'+
-          '<div class="progress-bar"><div class="progress-fill" style="width:'+(d.progress||0)+'%"></div></div>'+
-          '<div class="progress-info">'+
-            '<span>'+(d.progress||0)+'%</span>'+
-            '<span>'+(d.speed||'')+'</span>'+
-            '<span>'+(d.eta||'')+'</span>'+
-          '</div>'+
-        '</div>'
-      :'')+
-      
-      (d.error?'<div style="color:var(--danger);font-size:.85rem;margin-top:8px">❌ '+esc(d.error)+'</div>':'')+
-      
-      '<div class="action-buttons">'+
-        (isComplete?
-          '<a href="/api/download-file/'+d.id+'" class="action-btn btn-download" target="_blank">💾 Download File</a>'+
-          '<button class="action-btn btn-remove" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Remove</a>'
-        :'')+
-        
-        (isActive?
-          '<button class="action-btn btn-cancel" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Cancel</button>'
-        :'')+
-        
-        (d.status==='failed'?
-          '<button class="action-btn btn-retry" onclick="sendAction(\'/api/retry/'+d.id+'\')">Retry</button>'
-        :'')+
-        
-        (['cancelled','failed'].includes(d.status)&&!isComplete?
-          '<button class="action-btn btn-remove" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Remove</button>'
-        :'')+
-      '</div>'+
-    '</li>';
+    var html = '<li class="download-item" id="dl-' + d.id + '">' +
+      '<div class="download-header">' +
+        '<div class="download-info">' +
+          '<div class="download-title">' + esc(d.title) + '</div>' +
+          '<div class="download-meta">' + (d.author||'') + ' \u2022 ' + timeAgo(d.createdAt) + '</div>' +
+        '</div>' +
+        '<span class="status-badge status-' + d.status + '">' + d.status + '</span>' +
+      '</div>';
+    
+    if(isActive) {
+      html += '<div class="progress-container">' +
+        '<div class="progress-bar"><div class="progress-fill" style="width:' + (d.progress||0) + '%"></div></div>' +
+        '<div class="progress-info">' +
+          '<span>' + (d.progress||0) + '%</span>' +
+          '<span>' + (d.speed||'') + '</span>' +
+          '<span>' + (d.eta||'') + '</span>' +
+        '</div>' +
+      '</div>';
+    }
+    
+    if(d.error) {
+      html += '<div style="color:var(--danger);font-size:.85rem;margin-top:8px">\u274c ' + esc(d.error) + '</div>';
+    }
+    
+    html += '<div class="action-buttons">';
+    
+    if(isComplete) {
+      html += '<a href="/api/download-file/' + d.id + '" class="action-btn btn-download" target="_blank">\uD83DDCBE Download File</a>';
+      html += '<button class="action-btn btn-remove" data-action="cancel" data-id="' + d.id + '">Remove</button>';
+    }
+    
+    if(isActive) {
+      html += '<button class="action-btn btn-cancel" data-action="cancel" data-id="' + d.id + '">Cancel</button>';
+    }
+    
+    if(d.status==='failed') {
+      html += '<button class="action-btn btn-retry" data-action="retry" data-id="' + d.id + '">Retry</button>';
+    }
+    
+    if(['cancelled','failed'].indexOf(d.status) !== -1 && !isComplete) {
+      html += '<button class="action-btn btn-remove" data-action="cancel" data-id="' + d.id + '">Remove</button>';
+    }
+    
+    html += '</div></li>';
+    return html;
   }).join('');
+  
+  // Add event listeners to buttons
+  list.querySelectorAll('[data-action]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var action = this.getAttribute('data-action');
+      var id = this.getAttribute('data-id');
+      var url = '/api/' + action + '/' + id;
+      sendAction(url);
+    });
+  });
 }
 
 function updateStats(s){
