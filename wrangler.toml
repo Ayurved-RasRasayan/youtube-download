@@ -1,0 +1,58 @@
+# =============================================================================
+# YouTube Downloader - Cloudflare Worker Configuration
+# =============================================================================
+# Production-ready configuration for deploying YouTube Downloader
+# =============================================================================
+
+name = "youtube-downloader"
+main = "index.js"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# =============================================================================
+# Worker Limits & Settings
+# =============================================================================
+
+# Limit usage to prevent abuse
+[limits]
+cpu_ms = 50
+
+# =============================================================================
+# Environment Variables (secrets via wrangler secret put)
+# =============================================================================
+
+[vars]
+# Environment mode: "production" or "development"
+ENVIRONMENT = "production"
+
+# Maximum concurrent downloads (also set in CONFIG)
+MAX_CONCURRENT = "5"
+
+# Default video quality (worst for reliability)
+DEFAULT_QUALITY = "worst"
+
+# =============================================================================
+# Production Deployment Configuration
+# =============================================================================
+
+# For production, configure your custom domain here:
+# [routes]
+# pattern = "download.yourdomain.com/*"
+# custom_domain = true
+
+# =============================================================================
+# Development Configuration (uncomment for local dev)
+# =============================================================================
+
+# [dev]
+# port = 8787
+# local_protocol = "http"
+# upstream_protocol = "https"
+
+# =============================================================================
+# Static Assets (if needed in future)
+# =============================================================================
+
+# [assets]
+# directory = "./public"
+# binding = "ASSETS"
