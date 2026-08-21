@@ -2558,6 +2558,133 @@ app.get('/api/video/:videoId/formats', (req, res) => {
  * Smart download with automatic format selection (LOWEST QUALITY)
  * Now with real-time progress tracking using spawn()
  */
+// =============================================================================
+// AUTO-RENAME FUNCTION - Rename downloaded files to YouTube video titles
+// =============================================================================
+
+/**
+ * Rename a downloaded file to match the YouTube video title
+ * @param {Object} downloadObj - The download object containing video info
+ * @param {string} originalPath - Original file path (UUID or safe name)
+ * @returns {Promise<boolean>} True if renamed successfully, false if skipped
+ */
+async function renameDownloadedFile(downloadObj, originalPath) {
+    return new Promise((resolve) => {
+        try {
+            // Skip if no title available
+            if (!downloadObj || !downloadObj.title) {
+                console.log('[Rename] No title available, skipping rename');
+                resolve(false);
+                return;
+            }
+            
+            const originalTitle = downloadObj.title;
+            console.log('[Rename] 🎬 Renaming to:', originalTitle);
+            
+            // Create safe filename from YouTube title
+            // Remove characters that are invalid in filenames: \ / : * ? " < > |
+            let safeTitle = originalTitle
+                .replace(/[\\/:*?"<>|]/g, '-')  // Replace invalid chars with dash
+                .replace(/\s+/g, ' ')             // Collapse multiple spaces
+                .trim();
+            
+            // Limit length to avoid path too long errors (keep under 200 chars)
+            if (safeTitle.length > 180) {
+                safeTitle = safeTitle.substring(0, 177) + '...';
+            }
+            
+            // Determine extension from original file or default to .mp4
+            let extension = '.mp4';
+            if (originalPath && fs.existsSync(originalPath)) {
+                const ext = path.extname(originalPath).toLowerCase();
+                if (['.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'].includes(ext)) {
+                    extension = ext;
+                }
+            }
+            
+            const newFilename = safeTitle + extension;
+            const newPath = path.join(DOWNLOADS_DIR, newFilename);
+            
+            // Check if already has correct name (skip rename)
+            if (originalPath && path.basename(originalPath) === newFilename) {
+                console.log('[Rename] File already has correct name:', newFilename);
+                downloadObj.finalFilename = newFilename;
+                resolve(false);
+                return;
+            }
+            
+            // Check if target filename already exists (add suffix if so)
+            let finalNewPath = newPath;
+            let counter = 1;
+            while (fs.existsSync(finalNewPath) && finalNewPath !== originalPath) {
+                const tempName = safeTitle + ` (${counter})` + extension;
+                finalNewPath = path.join(DOWNLOADS_DIR, tempName);
+                counter++;
+                
+                // Safety: don't loop forever
+                if (counter > 100) {
+                    console.warn('[Rename] Too many duplicates, using original');
+                    downloadObj.finalFilename = path.basename(originalPath);
+                    resolve(false);
+                    return;
+                }
+            }
+            
+            // Find the actual downloaded file (yt-dlp may have added extension)
+            let actualOriginalPath = originalPath;
+            const possibleExtensions = ['.mp4', '.webm', '.mkv', '.avi', '.mov', '.flv'];
+            
+            if (originalPath && !fs.existsSync(actualOriginalPath)) {
+                // Try to find the file with different extensions
+                for (const ext of possibleExtensions) {
+                    const candidate = originalPath.replace(/\.[^.]+$/, '') + ext;
+                    if (fs.existsSync(candidate)) {
+                        actualOriginalPath = candidate;
+                        console.log('[Rename] Found actual file:', candidate);
+                        break;
+                    }
+                }
+            }
+            
+            // Perform rename if source exists and is different from target
+            if (actualOriginalPath && fs.existsSync(actualOriginalPath) && actualOriginalPath !== finalNewPath) {
+                fs.renameSync(actualOriginalPath, finalNewPath);
+                console.log('[Rename] ✅ Success!');
+                console.log('   From:', path.basename(actualOriginalPath));
+                console.log('   To:  ', newFilename);
+                
+                // Store final filename in download object
+                downloadObj.finalFilename = path.basename(finalNewPath);
+                downloadObj.renamedFrom = path.basename(actualOriginalPath);
+                downloadObj.renamedAt = new Date().toISOString();
+                
+                resolve(true);
+            } else if (!actualOriginalPath || !fs.existsSync(actualOriginalPath)) {
+                console.warn('[Rename] ⚠️ Source file not found:', actualOriginalPath);
+                // Store what the filename SHOULD be (for UI display)
+                downloadObj.finalFilename = newFilename;
+                downloadObj.renameFailed = 'source_not_found';
+                resolve(false);
+            } else {
+                console.log('[Rename] Source and target are same, skipping');
+                downloadObj.finalFilename = path.basename(finalNewPath);
+                resolve(false);
+            }
+            
+        } catch (error) {
+            console.error('[Rename] ❌ Error:', error.message);
+            // Store intended filename anyway for UI
+            if (downloadObj) {
+                downloadObj.finalFilename = downloadObj.title 
+                    ? downloadObj.title.replace(/[\\/:*?"<>|]/g, '-').substring(0, 180) + '.mp4'
+                    : downloadObj.filename;
+                downloadObj.renameError = error.message;
+            }
+            resolve(false);
+        }
+    });
+}
+
 function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress, onComplete, onError) {
     return new Promise(async (resolve, reject) => {
         console.log('\n[Smart Download] Starting smart download for:', videoUrl);
@@ -2649,12 +2776,25 @@ function smartDownload(downloadId, videoUrl, outputPath, downloadObj, onProgress
             // Use executeWithProgress for REAL-TIME progress tracking
             executeWithProgress(strategies, 0, downloadObj, onProgress,
                 // Success callback
-                (stdout, stderr) => {
+                async (stdout, stderr) => {
                     console.log('[Smart Download] ✅ Download complete!');
                     if (downloadObj) {
                         downloadObj.progress = 100;
                         if (downloadObj.formatInfo) {
                             downloadObj.formatInfo.status = 'completed';
+                        }
+                        
+                        // ⭐ AUTO-RENAME: Rename file to actual YouTube video title
+                        try {
+                            const renamed = await renameDownloadedFile(downloadObj, outputPath);
+                            if (renamed) {
+                                console.log('[Smart Download] ✅ File renamed to:', downloadObj.finalFilename);
+                                downloadObj.filename = downloadObj.finalFilename;
+                                downloadObj.outputPath = path.join(DOWNLOADS_DIR, downloadObj.finalFilename);
+                            }
+                        } catch (renameError) {
+                            console.warn('[Smart Download] ⚠️ Rename failed:', renameError.message);
+                            // Continue anyway - download was successful!
                         }
                     }
                     onComplete(stdout);
@@ -2704,14 +2844,39 @@ app.get('/api/download-queue', (req, res) => {
     const seqStatus = downloadQueue.getStatus();
     const seqStats = seqStatus.stats;
     
+    // ⭐ ENHANCED: Include detailed progress info for each download
+    const enrichedActive = activeDownloads.map(d => ({
+        ...d,
+        // Ensure progress fields exist
+        progress: d.progress || 0,
+        speed: d.speed || null,
+        total: d.total || null,
+        finalFilename: d.finalFilename || d.filename,
+        renamedFrom: d.renamedFrom || null,
+        renamedAt: d.renamedAt || null
+    }));
+    
+    const enrichedCompleted = completedDownloads.slice(-20).map(d => ({
+        ...d,
+        progress: 100,
+        finalFilename: d.finalFilename || d.filename,
+        renamedFrom: d.renamedFrom || null,
+        renamedAt: d.renamedAt || null
+    }));
+    
     res.json({
         success: true,
         mode: 'sequential',  // Tell frontend we're in sequential mode!
         queue: {
-            active: activeDownloads,
-            currentJob: seqStatus.currentJob,  // Which video is downloading NOW
+            active: enrichedActive,
+            currentJob: seqStatus.currentJob ? {
+                ...seqStatus.currentJob,
+                progress: seqStatus.currentJob.progress || 0,
+                speed: seqStatus.currentJob.speed || null,
+                finalFilename: seqStatus.currentJob.finalFilename || seqStatus.currentJob.filename
+            } : null,  // Which video is downloading NOW
             waiting: seqStatus.queueLength,    // How many videos are waiting
-            completed: completedDownloads.slice(-20), // Last 20 completed
+            completed: enrichedCompleted,      // Last 20 completed with rename info
             failed: failedDownloads.slice(-10),       // Last 10 failed
             skipped: skippedDownloads.slice(-20)
         },
@@ -2719,9 +2884,12 @@ app.get('/api/download-queue', (req, res) => {
             isProcessing: seqStatus.isProcessing,
             currentVideo: seqStatus.currentJob ? {
                 title: seqStatus.currentJob.title,
-                progress: seqStatus.currentJob.progress,
+                progress: seqStatus.currentJob.progress || 0,
+                speed: seqStatus.currentJob.speed || 'calculating...',
                 batchIndex: seqStatus.currentJob.batchIndex,
-                status: seqStatus.currentJob.status
+                totalInBatch: seqStatus.currentJob.totalInBatch,
+                status: seqStatus.currentJob.status,
+                finalFilename: seqStatus.currentJob.finalFilename || null
             } : null,
             remainingInQueue: seqStatus.queueLength,
             overallProgress: {
@@ -2741,7 +2909,8 @@ app.get('/api/download-queue', (req, res) => {
             completed: completedDownloads.length,
             failed: failedDownloads.length,
             skipped: skippedDownloads.length
-        }
+        },
+        timestamp: new Date().toISOString()  // Help frontend detect stale data
     });
 });
 
