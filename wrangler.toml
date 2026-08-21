@@ -2,20 +2,13 @@
 # YouTube Downloader - Cloudflare Worker Configuration
 # =============================================================================
 # Production-ready configuration for deploying YouTube Downloader
+# Compatible with FREE tier (no paid plan required)
 # =============================================================================
 
 name = "youtube-downloader"
 main = "index.js"
 compatibility_date = "2024-01-01"
 compatibility_flags = ["nodejs_compat"]
-
-# =============================================================================
-# Worker Limits & Settings
-# =============================================================================
-
-# Limit usage to prevent abuse
-[limits]
-cpu_ms = 50
 
 # =============================================================================
 # Environment Variables (secrets via wrangler secret put)
@@ -56,3 +49,11 @@ DEFAULT_QUALITY = "worst"
 # [assets]
 # directory = "./public"
 # binding = "ASSETS"
+
+# =============================================================================
+# NOTE: CPU Limits require PAID plan - commented out for free tier
+# To enable CPU limits, upgrade to Workers Paid plan and uncomment:
+#
+# [limits]
+# cpu_ms = 50
+# =============================================================================
