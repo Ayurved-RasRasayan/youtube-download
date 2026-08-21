@@ -1313,7 +1313,7 @@ function showVideos(videos){
     return '<div class="video-card" id="card-' + i + '">' +
       '<input type="checkbox" class="video-checkbox" value="' + i + '" onchange="toggleVideo(' + i + ')">' +
       '<div class="video-thumb-wrap">' +
-        '<img class="video-thumb" src="' + esc(v.thumbnail) + '" alt="" loading="lazy" onerror="this.style.display=\'none\';this.parentNode.innerHTML+=\'<div style=display:flex;align-items:center;justify-content:center;height:100%;background:#252550;color:#666>No Image</div>\';">' +
+        '<img class="video-thumb" src="' + esc(v.thumbnail) + '" alt="" loading="lazy" onerror="this.onerror=null;this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22120%22 height=%2290%22><rect fill=%22%23252550%22 width=%22100%25%22 height=%22100%25/><text x=%2250%25%22 y=%2250%25%22 fill=%22%23666%22 text-anchor=%22middle%22 dy=%22.3em%22>No Image</text></svg>\';">' +
         '<span class="video-duration">' + fmtTime(v.lengthSeconds) + '</span>' +
       '</div>' +
       '<div class="video-info">' +
