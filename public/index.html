@@ -218,24 +218,78 @@
             50% { opacity: 0.6; }
         }
 
-        /* Progress Bar */
+        /* Progress Bar - Enhanced with Animation */
         .progress-container {
-            width: 150px;
-            margin: 0 15px;
+            width: 100%;
+            margin: 10px 0;
+            order: 3; /* Position after video info */
         }
 
         .progress-bar {
-            height: 8px;
+            height: 12px;
             background: #e0e0e0;
-            border-radius: 4px;
+            border-radius: 6px;
             overflow: hidden;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
         }
 
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #11998e 0%, #38ef7d 100%);
-            border-radius: 4px;
-            transition: width 0.3s ease;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 6px;
+            transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            min-width: 2%; /* Show minimum progress */
+        }
+        
+        /* Active downloading state - animated shimmer */
+        .progress-fill.active {
+            background: linear-gradient(90deg, #11998e 0%, #38ef7d 50%, #11998e 100%);
+            background-size: 200% 100%;
+            animation: shimmer 2s infinite linear;
+        }
+        
+        @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+        }
+        
+        /* Complete state - green with checkmark */
+        .progress-fill.complete {
+            background: linear-gradient(90deg, #388e3c 0%, #4caf50 100%);
+            animation: pulse-complete 1s ease-out;
+        }
+        
+        @keyframes pulse-complete {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+            100% { transform: scale(1); }
+        }
+
+        .progress-details {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 6px;
+            font-size: 0.85em;
+            color: #555;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        
+        .progress-percent {
+            font-weight: 600;
+            color: #667eea;
+            min-width: 70px;
+        }
+        
+        .progress-speed {
+            color: #f57c00;
+            font-weight: 500;
+        }
+        
+        .progress-size {
+            color: #757575;
         }
 
         .progress-text {
@@ -243,6 +297,30 @@
             color: #666;
             text-align: center;
             margin-top: 3px;
+        }
+        
+        /* Renamed filename display */
+        .renamed-filename {
+            margin-top: 6px;
+            padding: 6px 10px;
+            background: #e8f5e9;
+            border-left: 3px solid #4caf50;
+            border-radius: 4px;
+            font-size: 0.85em;
+            color: #2e7d32;
+            word-break: break-all;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         /* Action Buttons */
@@ -672,37 +750,39 @@
         
         // Quick preset folders
         function setFolderPreset(preset) {
+            // Get current value to extract base path (user's home directory)
+            const currentValue = document.getElementById('downloadsDirInput').value;
+            
+            // Try to detect home directory from current path
+            // Common patterns: C:\Users\Username\... or /home/username/...
+            let homeDir = '';
+            const winMatch = currentValue.match(/^(C:\\Users\\[^\\]+\\)/);
+            const linuxMatch = currentValue.match(/^(\/home\/[^\/]+\/)/);
+            
+            if (winMatch) {
+                homeDir = winMatch[1];
+            } else if (linuxMatch) {
+                homeDir = linuxMatch[1];
+            } else {
+                // Fallback: show instructions
+                showAlert('Please type the full path manually (e.g., C:\\Users\\YourName\\Downloads)', 'warning');
+                return;
+            }
+            
             let newPath;
             
             switch(preset) {
                 case 'downloads':
-                    // Try to detect user's Downloads folder
-                    if (navigator.userAgent.includes('Windows')) {
-                        newPath = `${process.env.USERPROFILE || ''}\\Downloads\\YouTube-Downloader`;
-                    } else {
-                        newPath = `~/Downloads/YouTube-Downloader`;
-                    }
+                    newPath = homeDir + 'Downloads' + (winMatch ? '\\' : '/') + 'YouTube-Downloader';
                     break;
                 case 'desktop':
-                    if (navigator.userAgent.includes('Windows')) {
-                        newPath = `${process.env.USERPROFILE || ''}\\Desktop\\YouTube-Downloads`;
-                    } else {
-                        newPath = `~/Desktop/YouTube-Downloads`;
-                    }
+                    newPath = homeDir + 'Desktop' + (winMatch ? '\\' : '/') + 'YouTube-Downloads';
                     break;
                 case 'videos':
-                    if (navigator.userAgent.includes('Windows')) {
-                        newPath = `${process.env.USERPROFILE || ''}\\Videos\\YouTube`;
-                    } else {
-                        newPath = `~/Videos/YouTube`;
-                    }
+                    newPath = homeDir + 'Videos' + (winMatch ? '\\' : '/') + 'YouTube';
                     break;
                 case 'documents':
-                    if (navigator.userAgent.includes('Windows')) {
-                        newPath = `${process.env.USERPROFILE || ''}\\Documents\\YouTube`;
-                    } else {
-                        newPath = `~/Documents/YouTube`;
-                    }
+                    newPath = homeDir + 'Documents' + (winMatch ? '\\' : '/') + 'YouTube';
                     break;
                 default:
                     return;
@@ -784,20 +864,38 @@
                     <div class="video-info">
                         <div class="video-title">${escapeHtml(video.title)}</div>
                         <div class="video-meta">
-                            <span class="status-badge status-${video.downloadStatus}">
-                                ${getStatusIcon(video.downloadStatus)} ${video.downloadStatus}
+                            <span class="status-badge status-${video.downloadStatus}" id="status-${index}">
+                                ${getStatusIcon(video.downloadStatus)} ${getStatusLabel(video, index)}
                             </span>
                             ${video.duration ? `<span>⏱️ ${formatDuration(video.duration)}</span>` : ''}
                             ${video.views && video.views !== 'NA' ? `<span>👁️ ${formatNumber(video.views)}` : ''}
                             ${video.fileSize ? `<span>📦 ${video.fileSize}MB</span>` : ''}
                         </div>
+                        <!-- Renamed filename display -->
+                        <div id="filename-${index}" style="${video.finalFilename ? '' : 'display:none'}" class="renamed-filename">
+                            📄 ${escapeHtml(video.finalFilename || '')}
+                        </div>
                     </div>
 
-                    <div class="progress-container" id="progress-${index}" style="${video.downloadStatus !== 'downloading' ? 'display:none' : ''}">
+                    <!-- Enhanced Progress Bar with Live Updates -->
+                    <div class="progress-container" id="progress-container-${index}" style="${(video.downloadStatus === 'downloading' || video.downloadStatus === 'completed') && video.progress > 0 ? '' : 'display:none'}">
                         <div class="progress-bar">
-                            <div class="progress-fill" style="width: ${video.progress || 0}%"></div>
+                            <div class="progress-fill ${video.progress >= 100 ? 'complete' : 'active'}" 
+                                 id="progress-fill-${index}"
+                                 style="width: ${Math.min(video.progress || 0, 100)}%">
+                            </div>
                         </div>
-                        <div class="progress-text">${video.progress || 0}%</div>
+                        <div class="progress-details">
+                            <span class="progress-percent" id="progress-percent-${index}">
+                                ${video.progress >= 100 ? '✅ Complete!' : `${Math.round(video.progress || 0)}%`}
+                            </span>
+                            <span class="progress-speed" id="progress-speed-${index}">
+                                ${video.speed ? `🚀 ${video.speed}` : ''}
+                            </span>
+                            <span class="progress-size" id="progress-size-${index}">
+                                ${video.total ? `📦 ${video.total}` : ''}
+                            </span>
+                        </div>
                     </div>
 
                     <div class="video-actions">
@@ -806,13 +904,13 @@
                                 ⬇️ Download
                             </button>
                         ` : (video.downloadStatus === 'downloaded' || video.downloadStatus === 'completed') ? `
-                            <button class="btn-success btn-small" onclick="downloadFile('${video.id || ''}', '${(video.title || 'video').replace(/'/g, "\\'")}', '${video.filePath || ''}')">
+                            <button class="btn-success btn-small" onclick="downloadFile('${video.id || ''}', '${(video.title || 'video').replace(/'/g, "\\'")}', '${video.filePath || video.finalFilename || ''}')">
                                 📥 Download File
                             </button>
                             <span style="color: #388e3c; font-size: 0.9em; margin-left: 8px;">✅ Done</span>
                         ` : video.downloadStatus === 'downloading' ? `
                             <span class="status-badge status-downloading">
-                                <span class="spinner"></span>Downloading
+                                <span class="spinner"></span>Downloading...
                             </span>
                         ` : video.downloadStatus === 'skipped' ? `
                             <button class="btn-success btn-small" onclick="downloadFile('${video.id || ''}', '${(video.title || 'video').replace(/'/g, "\\'")}', '${video.filePath || ''}')">
@@ -831,6 +929,25 @@
                     </div>
                 </div>
             `).join('');
+            
+            // ⭐ Start live progress sync if any video is downloading
+            if (videos.some(v => v.downloadStatus === 'downloading')) {
+                startLiveProgressSync();
+            }
+        }
+        
+        // Get enhanced status label with rename info
+        function getStatusLabel(video, index) {
+            switch (video.downloadStatus) {
+                case 'new': return 'new';
+                case 'downloaded': return 'downloaded';
+                case 'downloading': return video.progress > 0 ? `${Math.round(video.progress)}%` : 'downloading';
+                case 'completed':
+                    return video.finalFilename ? '✅ Saved' : 'completed';
+                case 'skipped': return 'skipped';
+                case 'error': return 'error';
+                default: return video.downloadStatus;
+            }
         }
 
         // Get CSS class based on video status
@@ -936,6 +1053,8 @@
                     // Will be updated by polling
                     video.jobId = result.jobId;
                     showAlert(`Started downloading: ${video.title}`, 'info');
+                    // ⭐ Start live progress sync
+                    startLiveProgressSync();
                 } else {
                     throw new Error(result.error || 'Download failed');
                 }
@@ -947,6 +1066,181 @@
                 video.error = error.message;
                 renderVideos();
                 showAlert(`Error downloading: ${error.message}`, 'error');
+            }
+        }
+        
+        // ⭐ LIVE PROGRESS SYNC - Real-time updates from backend
+        let progressSyncInterval = null;
+        
+        function startLiveProgressSync() {
+            // Don't start multiple syncs
+            if (progressSyncInterval) return;
+            
+            console.log('[Progress] Starting live sync...');
+            
+            // Poll every 2 seconds for progress updates
+            progressSyncInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/download-queue`);
+                    const data = await response.json();
+                    
+                    if (!data.success) return;
+                    
+                    let hasActiveDownloads = false;
+                    let completedThisTick = [];
+                    
+                    // Update each video's progress from backend data
+                    videos.forEach((video, index) => {
+                        // Find matching download in queue
+                        const activeDownload = data.queue.active.find(d => 
+                            d.videoId === video.id || d.title === video.title
+                        );
+                        const completedDownload = data.queue.completed.find(d => 
+                            d.videoId === video.id || d.title === video.title
+                        );
+                        
+                        if (activeDownload) {
+                            hasActiveDownloads = true;
+                            
+                            // Update progress with animation
+                            const oldProgress = video.progress || 0;
+                            const newProgress = activeDownload.progress || 0;
+                            
+                            if (oldProgress !== newProgress) {
+                                video.progress = newProgress;
+                                video.speed = activeDownload.speed || null;
+                                video.total = activeDownload.total || null;
+                                
+                                // Update DOM elements directly (no full re-render)
+                                updateProgressBar(index, newProgress, activeDownload.speed, activeDownload.total);
+                                updateStatusBadge(index, video);
+                            }
+                        }
+                        
+                        if (completedDownload && video.downloadStatus !== 'completed' && video.downloadStatus !== 'downloaded') {
+                            // Video just completed!
+                            video.downloadStatus = 'completed';
+                            video.progress = 100;
+                            video.finalFilename = completedDownload.finalFilename || null;
+                            video.renamedFrom = completedDownload.renamedFrom || null;
+                            
+                            completedThisTick.push({
+                                index,
+                                title: video.title,
+                                finalFilename: video.finalFilename
+                            });
+                        }
+                    });
+                    
+                    // Show completion notifications
+                    if (completedThisTick.length > 0) {
+                        completedThisTick.forEach(({index, title, finalFilename}) => {
+                            showCompletionNotification(index, title, finalFilename);
+                        });
+                        
+                        // Re-render to show final state
+                        renderVideos();
+                    }
+                    
+                    // Stop syncing if no active downloads
+                    if (!hasActiveDownloads && completedThisTick.length === 0) {
+                        // Check one more time before stopping
+                        const stillDownloading = videos.some(v => v.downloadStatus === 'downloading');
+                        if (!stillDownloading) {
+                            stopLiveProgressSync();
+                        }
+                    }
+                    
+                } catch (error) {
+                    console.warn('[Progress] Sync error:', error);
+                }
+            }, 2000);  // Every 2 seconds
+        }
+        
+        function stopLiveProgressSync() {
+            if (progressSyncInterval) {
+                clearInterval(progressSyncInterval);
+                progressSyncInterval = null;
+                console.log('[Progress] Stopped live sync');
+            }
+        }
+        
+        // Update progress bar DOM elements directly (smooth animation)
+        function updateProgressBar(index, progress, speed, size) {
+            const fillEl = document.getElementById(`progress-fill-${index}`);
+            const percentEl = document.getElementById(`progress-percent-${index}`);
+            const speedEl = document.getElementById(`progress-speed-${index}`);
+            const sizeEl = document.getElementById(`progress-size-${index}`);
+            const containerEl = document.getElementById(`progress-container-${index}`);
+            
+            if (containerEl) containerEl.style.display = '';
+            
+            if (fillEl) {
+                fillEl.style.width = `${Math.min(progress, 100)}%`;
+                if (progress >= 100) {
+                    fillEl.classList.add('complete');
+                    fillEl.classList.remove('active');
+                } else {
+                    fillEl.classList.add('active');
+                    fillEl.classList.remove('complete');
+                }
+            }
+            
+            if (percentEl) {
+                percentEl.textContent = progress >= 100 ? '✅ Complete!' : `${Math.round(progress)}%`;
+            }
+            
+            if (speedEl) {
+                speedEl.textContent = speed ? `🚀 ${speed}` : '';
+            }
+            
+            if (sizeEl) {
+                sizeEl.textContent = size ? `📦 ${size}` : '';
+            }
+        }
+        
+        // Update status badge during download
+        function updateStatusBadge(index, video) {
+            const statusEl = document.getElementById(`status-${index}`);
+            if (statusEl) {
+                statusEl.innerHTML = `${getStatusIcon(video.downloadStatus)} ${getStatusLabel(video, index)}`;
+            }
+        }
+        
+        // Show completion notification with rename info
+        function showCompletionNotification(index, title, finalFilename) {
+            // Show alert notification
+            const message = finalFilename 
+                ? `✅ Download complete: "${title}"\n📄 Saved as: ${finalFilename}`
+                : `✅ Download complete: "${title}"`;
+            
+            showAlert(message.replace('\n', '<br>'), 'success', 8000);  // 8 seconds
+            
+            // Update filename display
+            const filenameEl = document.getElementById(`filename-${index}`);
+            if (filenameEl && finalFilename) {
+                filenameEl.style.display = '';
+                filenameEl.innerHTML = `📄 ${escapeHtml(finalFilename)}`;
+            }
+            
+            // Play sound notification (if browser allows)
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = 800;  // Pleasant tone
+                oscillator.type = 'sine';
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.3);
+                
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.3);
+            } catch (e) {
+                // Audio not allowed - ignore silently
             }
         }
 
@@ -1167,6 +1461,9 @@
 
         // Initialize on page load
         document.addEventListener('DOMContentLoaded', () => {
+            // Load current settings (including download folder!)
+            loadSettings();
+            
             // Check for existing channels
             fetchChannels();
         });
