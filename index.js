@@ -1,7 +1,7 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════╗
  * ║  YouTube CHANNEL Downloader - Cloudflare Worker                          ║
- * ║  Version: 8.0.0 - Download ALL Videos from Any Channel                   ║
+ * ║  Version: 9.0.0 - YouTube RSS Feed Support (API Fix)                     ║
  * ╚═══════════════════════════════════════════════════════════════════════════╝
  * 
  * ✅ FEATURES:
@@ -18,7 +18,7 @@
 // =============================================================================
 
 const CONFIG = {
-  VERSION: '8.1.0',
+  VERSION: '9.0.0',
   MAX_CONCURRENT: 3,
   MAX_CHANNEL_VIDEOS: 100,
   RETRY_ATTEMPTS: 3,
@@ -697,7 +697,138 @@ async function resolveChannelId(channelInfo) {
 }
 
 /**
+ * Parse YouTube RSS Feed XML and extract channel info + videos
+ * This is the PRIMARY method since Invidious APIs are often blocked
+ */
+async function getChannelFromRSS(channelInfo) {
+  let feedUrl;
+  
+  // Build RSS URL based on channel type
+  if (channelInfo.type === 'user') {
+    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?user=${encodeURIComponent(channelInfo.id)}`;
+  } else if (channelInfo.type === 'channel') {
+    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?channel_id=${encodeURIComponent(channelInfo.id)}`;
+  } else if (channelInfo.type === 'handle') {
+    // For handles, try the /@handle format which sometimes works
+    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?channel_id=${encodeURIComponent('@' + channelInfo.id)}`;
+  } else {
+    // Custom/legacy URLs - try as user
+    feedUrl = `${CONFIG.YOUTUBE.FEEDS}?user=${encodeURIComponent(channelInfo.id)}`;
+  }
+  
+  console.log(`📡 Trying RSS feed: ${feedUrl}`);
+  
+  try {
+    const response = await fetch(feedUrl, {
+      signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT),
+      headers: { 'Accept': 'application/xml, application/atom+xml, */*' }
+    });
+    
+    if (!response.ok) {
+      console.log(`RSS feed returned ${response.status}`);
+      return null;
+    }
+    
+    const xmlText = await response.text();
+    
+    // Check if it's actually XML (not an error page)
+    if (!xmlText.includes('<feed') && !xmlText.includes('<?xml')) {
+      console.log('RSS response is not valid XML');
+      return null;
+    }
+    
+    // Parse the XML
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+    
+    // Extract channel info from feed
+    const titleEl = xmlDoc.querySelector('title');
+    const channelIdEl = xmlDoc.querySelector('yt\\:channelId, channelId');
+    const authorNameEl = xmlDoc.querySelector('author > name');
+    const authorUriEl = xmlDoc.querySelector('author > uri');
+    const publishedEl = xmlDoc.querySelector('published');
+    
+    const channelName = titleEl ? titleEl.textContent : channelInfo.id;
+    const rssChannelId = channelIdEl ? channelIdEl.textContent : '';
+    const authorName = authorNameEl ? authorNameEl.textContent : channelName;
+    const authorUri = authorUriEl ? authorUriEl.textContent : '';
+    
+    // Extract all video entries
+    const entries = xmlDoc.querySelectorAll('entry');
+    const videos = [];
+    
+    entries.forEach(entry => {
+      const videoIdEl = entry.querySelector('yt\\:videoId, videoId');
+      const videoTitleEl = entry.querySelector('title');
+      const publishedEl = entry.querySelector('published');
+      const updatedEl = entry.querySelector('updated');
+      const descEl = entry.querySelector('media\\:group > media\\:description, media\\:description');
+      const thumbEl = entry.querySelector('media\\:group > media\\:thumbnail, media\\:thumbnail');
+      
+      if (videoIdEl) {
+        const videoId = videoIdEl.textContent;
+        videos.push({
+          videoId: videoId,
+          title: videoTitleEl ? videoTitleEl.textContent : 'Untitled',
+          thumbnail: thumbEl ? thumbEl.getAttribute('url') : `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+          author: authorName,
+          authorId: rssChannelId,
+          lengthSeconds: 0, // RSS doesn't provide duration
+          viewCount: 0, // RSS doesn't provide views
+          publishedText: publishedEl ? formatRSSDate(publishedEl.textContent) : '',
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+          description: descEl ? descEl.textContent : ''
+        });
+      }
+    });
+    
+    console.log(`✅ RSS Feed success! Found ${videos.length} videos for "${channelName}"`);
+    
+    return {
+      id: rssChannelId || channelInfo.id,
+      name: channelName,
+      avatar: '', // RSS doesn't provide avatar
+      banner: '',
+      description: `Channel: ${authorName}`,
+      subscriberCount: 0, // RSS doesn't provide subscribers
+      videoCount: videos.length,
+      viewCount: 0,
+      joined: publishedEl ? new Date(publishedEl.textContent).getTime() : Date.now(),
+      videos: videos.slice(0, CONFIG.MAX_CHANNEL_VIDEOS), // Limit videos
+      source: 'youtube-rss',
+      isRSS: true
+    };
+    
+  } catch (e) {
+    console.warn('RSS feed error:', e.message.substring(0, 100));
+    return null;
+  }
+}
+
+/**
+ * Format RSS date to relative text
+ */
+function formatRSSDate(dateStr) {
+  try {
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    
+    if (diffDays === 0) return 'Today';
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return `${diffDays} days ago`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+    if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
+    return `${Math.floor(diffDays / 365)} years ago`;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Get channel information with multiple fallbacks
+ * Priority: YouTube RSS Feed → Invidious APIs → Fallback mode
  */
 async function getChannelInfo(channelUrl) {
   const channelInfo = extractChannelInfo(channelUrl);
@@ -711,7 +842,16 @@ async function getChannelInfo(channelUrl) {
     channelId = channelInfo.id;
   }
   
-  // Method 1: Try Invidious APIs
+  // Method 1: Try YouTube RSS Feed FIRST (most reliable!)
+  console.log('🔄 Method 1: Trying YouTube RSS Feed...');
+  const rssResult = await getChannelFromRSS(channelInfo);
+  if (rssResult && rssResult.videos.length > 0) {
+    console.log(`✅ Got channel info from RSS with ${rssResult.videos.length} videos!`);
+    return rssResult;
+  }
+  
+  // Method 2: Try Invidious APIs
+  console.log('🔄 Method 2: Trying Invidious APIs...');
   for (const apiBase of CONFIG.APIS) {
     try {
       const apiUrl = `${apiBase}/api/v1/channels/${channelId}`;
@@ -742,8 +882,8 @@ async function getChannelInfo(channelUrl) {
     }
   }
   
-  // Method 2: Fallback - Return basic info from URL (works even without APIs)
-  console.log('⚠️ All APIs failed, using fallback mode');
+  // Method 3: Fallback - Return basic info from URL (works even without APIs)
+  console.log('⚠️ All methods failed, using fallback mode');
   
   const displayName = channelInfo.type === 'handle' 
     ? channelInfo.id.replace('@', '') 
@@ -751,17 +891,17 @@ async function getChannelInfo(channelUrl) {
     
   return {
     id: channelId,
-    name: displayName, // Extract name from handle/URL
-    avatar: '', // No avatar available without API
+    name: displayName,
+    avatar: '',
     banner: '',
-    description: 'Channel information temporarily unavailable',
+    description: 'Channel information temporarily unavailable. Using limited mode.',
     subscriberCount: 0,
     videoCount: 0,
     viewCount: 0,
     joined: Date.now(),
     videos: [],
     source: 'fallback',
-    isFallback: true // Flag to indicate this is fallback data
+    isFallback: true
   };
 }
 
