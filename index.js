@@ -1,17 +1,16 @@
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════╗
- * ║  YouTube Downloader - FULLY FUNCTIONAL Cloudflare Worker                ║
- * ║  Version: 6.0.0 Production (Real Downloads)                            ║
+ * ║  YouTube CHANNEL Downloader - Cloudflare Worker                          ║
+ * ║  Version: 8.0.0 - Download ALL Videos from Any Channel                   ║
  * ╚═══════════════════════════════════════════════════════════════════════════╝
  * 
- * ✅ REAL FEATURES:
- *    • Actual video streaming via Invidious API
- *    • Direct download links to video files
- *    • Format selection with quality options
- *    • Audio-only extraction support
- *    • Real-time progress tracking
- *    • Cookie authentication for age-restricted content
- *    • Smart fallback across multiple API instances
+ * ✅ FEATURES:
+ *    • Paste ANY YouTube channel URL (@handle, /c/, /channel/, /user/)
+ *    • Fetch ALL videos from the channel via Invidious API
+ *    • Select specific videos or download ALL at once
+ *    • Real video file downloads (360p, 720p, 1080p + Audio only)
+ *    • Batch download queue with progress tracking
+ *    • Smart fallback across multiple Invidious instances
  */
 
 // =============================================================================
@@ -19,23 +18,23 @@
 // =============================================================================
 
 const CONFIG = {
-  VERSION: '6.0.0',
-  MAX_CONCURRENT: 5,
-  DEFAULT_QUALITY: 'worst',
+  VERSION: '8.0.0',
+  MAX_CONCURRENT: 3, // Reduced for channel downloads
+  MAX_CHANNEL_VIDEOS: 100, // Max videos to fetch per channel
   RETRY_ATTEMPTS: 3,
   INFO_TIMEOUT: 15000,
-  DOWNLOAD_TIMEOUT: 300000, // 5 minutes max
+  DOWNLOAD_TIMEOUT: 300000,
   
-  // Invidious API instances (tried in order)
+  // Invidious API instances (tried in order until one works)
   APIS: [
-    { url: 'https://yt.lemnoslife.com', priority: 1 },
-    { url: 'https://inv.nadeko.net', priority: 2 },
-    { url: 'https://invidious.fdn.fr', priority: 3 },
-    { url: 'https://vid.puffyan.us', priority: 4 },
-    { url: 'https://invidious.snopyta.org', priority: 5 }
+    'https://yt.lemnoslife.com',
+    'https://inv.nadeko.net',
+    'https://invidious.fdn.fr',
+    'https://vid.puffyan.us',
+    'https://invidious.snopyta.org',
+    'https://invidious.kavin.rocks'
   ],
   
-  // YouTube endpoints
   YOUTUBE: {
     OEMBED: 'https://www.youtube.com/oembed',
     THUMBNAIL: 'https://img.youtube.com/vi'
@@ -43,25 +42,7 @@ const CONFIG = {
 };
 
 // =============================================================================
-// VIDEO FORMATS DATABASE
-// =============================================================================
-
-const FORMAT_PRESETS = {
-  // Video formats (combined video+audio)
-  'worst': { quality: '360p', format: 'mp4', description: 'Lowest quality (smallest file)' },
-  'low': { quality: '480p', format: 'mp4', description: 'Low quality' },
-  'medium': { quality: '720p', format: 'mp4', description: 'HD Ready' },
-  'high': { quality: '1080p', format: 'mp4', description: 'Full HD' },
-  'best': { quality: 'best', format: 'mp4', description: 'Best available' },
-  
-  // Audio only
-  'audio-mp3': { quality: 'audio', format: 'mp3', description: 'Audio only (MP3)' },
-  'audio-m4a': { quality: 'audio', format: 'm4a', description: 'Audio only (M4A)' },
-  'audio-worst': { quality: 'worstaudio', format: 'm4a', description: 'Lowest audio quality' }
-};
-
-// =============================================================================
-// DOWNLOAD STORE - State Management
+// DOWNLOAD STORE - Manages all download state
 // =============================================================================
 
 class DownloadStore {
@@ -78,12 +59,12 @@ class DownloadStore {
     };
   }
 
-  genId() {
+  generateId() {
     return `dl_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   }
 
   create(url, opts = {}) {
-    const id = this.genId();
+    const id = this.generateId();
     const download = {
       id,
       url,
@@ -101,9 +82,9 @@ class DownloadStore {
       format: opts.format || 'mp4',
       
       // Real download info
-      directUrl: null,        // Direct URL to video file
-      fileSize: null,         // Actual file size
-      contentType: null,      // MIME type
+      directUrl: null,
+      fileSize: null,
+      contentType: null,
       downloaded: 0,
       
       // Timestamps
@@ -135,7 +116,6 @@ class DownloadStore {
     const dl = this.downloads.get(id);
     if (!dl) return null;
     Object.assign(dl, data);
-    this.downloads.set(id, dl);
     return dl;
   }
 
@@ -146,7 +126,6 @@ class DownloadStore {
     
     const dl = this.downloads.get(id);
     if (!dl) return { ok: false, reason: 'NOT_FOUND' };
-    
     if (!['queued', 'paused'].includes(dl.status)) {
       return { ok: false, reason: `INVALID_STATUS: ${dl.status}` };
     }
@@ -289,173 +268,213 @@ class DownloadStore {
       if (dl && dl.status === 'queued') {
         const result = this.start(id);
         if (result.ok) {
-          this.prepareDownload(id);
+          this.prepareDownload(id); // Start getting real URL
         }
       }
     }
   }
 
   /**
-   * PREPARE DOWNLOAD - Get real direct URL from Invidious
+   * PREPARE DOWNLOAD - Get real direct video URL from Invidious
    */
   async prepareDownload(id) {
     const dl = this.get(id);
     if (!dl) return;
 
     try {
-      // Update status to show we're preparing
-      this.update(id, { 
-        progress: 10, 
-        speed: 'Preparing...', 
-        eta: 'Getting direct URL...' 
+      // Update progress to show we're working
+      this.update(id, {
+        progress: 10,
+        speed: 'Preparing...',
+        eta: 'Connecting to API...'
       });
 
-      // Get video ID
+      // Extract video ID from URL
       const videoId = extractVideoId(dl.url);
-      if (!videoId) throw new Error('Could not extract video ID');
+      if (!videoId) throw new Error('Could not extract video ID from URL');
+
+      let directUrl = null;
+      let selectedFormat = null;
 
       // Try each Invidious instance until we get a working URL
-      let directUrl = null;
-      let videoInfo = null;
-
-      for (const api of CONFIG.APIS) {
+      for (let i = 0; i < CONFIG.APIS.length; i++) {
+        const apiUrl = `${CONFIG.APIS[i]}/api/v1/videos/${videoId}`;
+        
         try {
-          const apiUrl = `${api.url}/api/v1/videos/${videoId}`;
-          
+          this.update(id, {
+            progress: 20 + (i * 10),
+            eta: `Trying API ${i + 1}/${CONFIG.APIS.length}...`
+          });
+
           const response = await fetch(apiUrl, {
-            headers: { 
+            headers: {
               'Accept': 'application/json',
-              'User-Agent': 'Mozilla/5.0 (compatible; YouTubeDownloader/1.0)'
+              'User-Agent': 'Mozilla/5.0 (compatible; YouTubeDownloader/8.0)'
             },
             signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
           });
 
           if (response.ok) {
-            const data = await response.json();
+            const videoData = await response.json();
             
             // Update metadata from API
-            if (data.title) this.update(id, { title: data.title });
-            if (data.author) this.update(id, { author: data.author });
-            if (data.lengthSeconds) this.update(id, { duration: parseInt(data.lengthSeconds) });
-            if (data.videoThumbnails?.[0]?.url) {
-              this.update(id, { thumbnail: data.videoThumbnails[0].url });
+            if (videoData.title) this.update(id, { title: videoData.title });
+            if (videoData.author) this.update(id, { author: videoData.author });
+            if (videoData.lengthSeconds) this.update(id, { duration: parseInt(videoData.lengthSeconds) });
+            if (videoData.videoThumbnails?.[0]?.url) {
+              this.update(id, { thumbnail: videoData.videoThumbnails[0].url });
             }
 
-            // Find best matching format
-            const formatUrl = this.selectFormat(data, dl.quality, dl.format);
-            if (formatUrl) {
-              directUrl = formatUrl.url;
-              videoInfo = formatUrl;
+            // Find best format based on user's quality preference
+            selectedFormat = this.selectBestFormat(videoData, dl.quality, dl.format);
+            
+            if (selectedFormat && selectedFormat.url) {
+              directUrl = selectedFormat.url;
               
               // Get file size if available
-              if (formatUrl.contentLength) {
-                this.update(id, { fileSize: parseInt(formatUrl.contentLength) });
+              if (selectedFormat.contentLength) {
+                this.update(id, { fileSize: parseInt(selectedFormat.contentLength) });
               }
               
+              console.log(`✅ Got URL from ${CONFIG.APIS[i]}`);
               break; // Success! Stop trying other APIs
             }
           }
-        } catch (e) {
-          console.warn(`API ${api.url} failed:`, e.message);
-          continue;
+        } catch (apiError) {
+          console.warn(`❌ API ${CONFIG.APIS[i]} failed:`, apiError.message);
+          continue; // Try next API
         }
       }
 
       if (!directUrl) {
-        throw new Error('No suitable format found. Video may be unavailable or region-restricted.');
+        throw new Error(
+          'No suitable video format found. The video may be:\n' +
+          '- Private or age-restricted\n' +
+          '- Not available in your region\n' +
+          '- Removed or deleted'
+        );
       }
 
-      // Update with real download info
+      // Success! Update with real download info
       this.update(id, {
-        progress: 50,
-        directUrl,
-        contentType: videoInfo.type || 'video/mp4',
+        progress: 80,
+        directUrl: directUrl,
+        contentType: selectedFormat.type || 'video/mp4',
         speed: 'Ready!',
-        eta: 'Click download to save'
+        eta: 'Click Download File button'
       });
 
-      // Mark as ready for download
+      // Mark as completed with the direct URL
       this.complete(id, {
-        directUrl,
+        directUrl: directUrl,
         fileSize: dl.fileSize || 0
       });
 
+      console.log(`✅ Download ready: ${dl.title}`);
+
     } catch (error) {
+      console.error('❌ Prepare download failed:', error.message);
       this.fail(id, error);
     }
   }
 
   /**
-   * SELECT FORMAT - Find best matching URL from video data
+   * SELECT BEST FORMAT - Find the right video quality
    */
-  selectFormat(videoData, quality, format) {
+  selectBestFormat(videoData, requestedQuality, requestedFormat) {
+    // Combine all available formats
     const allFormats = [
       ...(videoData.adaptiveFormats || []),
       ...(videoData.formatStreams || [])
     ];
 
-    if (allFormats.length === 0) return null;
+    if (allFormats.length === 0) {
+      console.warn('No formats available in video data');
+      return null;
+    }
 
-    // Filter by audio/video preference
-    const isAudioOnly = quality.includes('audio');
-    
-    let candidates = allFormats.map(f => ({
+    // Parse and categorize formats
+    const formats = allFormats.map(f => ({
       url: f.url,
       itag: f.itag,
+      qualityLabel: f.qualityLabel || f.quality || 'unknown',
       quality: f.qualityLabel || f.quality || 'unknown',
       type: f.type || 'unknown',
       contentLength: f.contentLength,
-      encoding: f.encoding || 'unknown',
-      resolution: f.resolution || 'unknown',
-      isAudio: (f.type || '').includes('audio'),
-      isVideo: (f.type || '').includes('video')
+      encoding: f.encoding,
+      resolution: f.resolution,
+      isAudio: (f.type || '').toLowerCase().includes('audio'),
+      isVideoOnly: (f.type || '').toLowerCase().includes('video') && (f.type || '').includes('only')
     }));
 
-    // If audio requested, filter for audio only
-    if (isAudioOnly) {
-      candidates = candidates.filter(c => c.isAudio);
-      if (candidates.length === 0) return null;
-      
-      // Return worst (smallest) audio
-      candidates.sort((a, b) => {
-        const sizeA = parseInt(a.contentLength) || Infinity;
-        const sizeB = parseInt(b.contentLength) || Infinity;
-        return sizeA - sizeB;
-      });
-      
-      return candidates[0];
+    // Check if audio-only request
+    const wantAudio = requestedQuality.includes('audio');
+
+    if (wantAudio) {
+      // Return best audio format
+      const audioFormats = formats.filter(f => f.isAudio);
+      if (audioFormats.length > 0) {
+        audioFormats.sort((a, b) => {
+          const sizeA = parseInt(a.contentLength) || Infinity;
+          const sizeB = parseInt(b.contentLength) || Infinity;
+          return sizeA - sizeB;
+        });
+        return audioFormats[0];
+      }
+      return null;
     }
 
-    // For video, prefer combined formats (video+audio)
-    const combined = candidates.filter(c => !c.isAudio && !c.isVideo?.endsWith('only'));
+    // For video: prefer combined formats (video + audio together)
+    const combinedFormats = formats.filter(f => !f.isAudio && !f.isVideoOnly);
     
-    if (combined.length > 0) {
-      // Sort by quality preference
-      combined.sort((a, b) => {
-        const qualA = parseQualityValue(a.quality);
-        const qualB = parseQualityValue(b.quality);
+    if (combinedFormats.length > 0) {
+      combinedFormats.sort((a, b) => {
+        const qualA = this.parseQualityNumber(a.quality);
+        const qualB = this.parseQualityNumber(b.quality);
         
-        if (quality === 'worst') return qualA - qualB;
-        if (quality === 'best') return qualB - qualA;
-        
-        // Find closest to requested quality without going over
-        const target = parseQualityValue(quality);
-        const diffA = Math.abs(qualA - target);
-        const diffB = Math.abs(qualB - target);
-        return diffA - diffB;
+        switch (requestedQuality) {
+          case 'worst':
+          case 'low':
+            return qualA - qualB;
+          case 'best':
+          case 'high':
+            return qualB - qualA;
+          default:
+            const target = this.parseQualityNumber(requestedQuality);
+            const diffA = Math.abs(qualA - target);
+            const diffB = Math.abs(qualB - target);
+            return diffA - diffB;
+        }
       });
-
-      return combined[0];
+      
+      return combinedFormats[0];
     }
 
     // Fallback: use any video format
-    const videoFormats = candidates.filter(c => c.type.includes('video'));
+    const videoFormats = formats.filter(f => f.type.toLowerCase().includes('video'));
     if (videoFormats.length > 0) {
-      return videoFormats.sort((a, b) => parseQualityValue(a.quality) - parseQualityValue(b.quality))[0];
+      videoFormats.sort((a, b) => this.parseQualityNumber(a.quality) - this.parseQualityNumber(b.quality));
+      return videoFormats[0];
     }
 
-    // Last resort
-    return candidates[0];
+    return formats[0];
+  }
+
+  parseQualityNumber(qualityStr) {
+    if (!qualityStr) return Infinity;
+    
+    const match = qualityStr.match(/(\d+)/);
+    if (match) return parseInt(match[1], 10);
+    
+    const qualityMap = {
+      'worst': 144,
+      'low': 360,
+      'medium': 720,
+      'high': 1080,
+      'best': Infinity
+    };
+    
+    return qualityMap[qualityStr.toLowerCase()] || Infinity;
   }
 
   getStats() {
@@ -478,31 +497,84 @@ class DownloadStore {
   }
 }
 
-// Initialize store
+// Initialize global store
 const store = new DownloadStore();
 
 // =============================================================================
 // UTILITY FUNCTIONS
 // =============================================================================
 
-function isValidUrl(url) {
+function isValidYouTubeUrl(url) {
   if (!url || typeof url !== 'string') return false;
+  return /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)/.test(url.trim());
+}
+
+function isValidVideoUrl(url) {
+  if (!url) return false;
   return /^(https?:\/\/)?(www\.)?(youtube\.com\/watch\?v=|youtube\.com\/shorts\/|youtu\.be\/|youtube\.com\/embed\/|m\.youtube\.com)/.test(url.trim());
 }
 
 function extractVideoId(url) {
   if (!url) return null;
+  
   const patterns = [
     /[?&]v=([^&]+)/,
     /youtu\.be\/([^?&]+)/,
     /\/shorts\/([^?&]+)/,
     /\/embed\/([^?&]+)/
   ];
-  for (const p of patterns) {
-    const m = url.match(p);
-    if (m) return m[1];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
   }
+  
   return null;
+}
+
+/**
+ * EXTRACT CHANNEL ID/HANDLE from various YouTube URL formats
+ * Supports:
+ * - youtube.com/@handle
+ * - youtube.com/c/ChannelName
+ * - youtube.com/channel/UC...
+ * - youtube.com/user/Username
+ */
+function extractChannelInfo(url) {
+  if (!url) return null;
+  
+  try {
+    const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+    const path = urlObj.pathname;
+    
+    // @handle format (newest): youtube.com/@SomeChannel
+    const handleMatch = path.match(/^\/@([^\/]+)/);
+    if (handleMatch) {
+      return { type: 'handle', id: handleMatch[1], original: url };
+    }
+    
+    // /c/ format: youtube.com/c/ChannelName
+    const cMatch = path.match(/^\/c\/([^\/]+)/i);
+    if (cMatch) {
+      return { type: 'custom', id: cMatch[1], original: url };
+    }
+    
+    // /channel/ format: youtube.com/channel/UC...
+    const channelMatch = path.match(/^\/channel\/(UC[^\/]+)/i);
+    if (channelMatch) {
+      return { type: 'channel', id: channelMatch[1], original: url };
+    }
+    
+    // /user/ format: youtube.com/user/Username
+    const userMatch = path.match(/^\/user\/([^\/]+)/i);
+    if (userMatch) {
+      return { type: 'user', id: userMatch[1], original: url };
+    }
+    
+    return null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function sanitizeFilename(name) {
@@ -511,14 +583,6 @@ function sanitizeFilename(name) {
     .replace(/\s+/g, '_')
     .substring(0, 200)
     .trim() || 'video';
-}
-
-function parseQualityValue(quality) {
-  if (!quality) return Infinity;
-  const match = quality.match(/(\d+)/);
-  if (match) return parseInt(match[1], 10);
-  const map = { 'worst': 144, 'low': 360, 'medium': 720, 'high': 1080, 'best': Infinity };
-  return map[quality.toLowerCase()] || Infinity;
 }
 
 function formatBytes(bytes) {
@@ -530,9 +594,18 @@ function formatBytes(bytes) {
 
 function formatDuration(seconds) {
   if (!seconds) return '--:--';
-  const m = Math.floor(seconds / 60);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function formatNumber(num) {
+  if (!num) return '0';
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return num.toString();
 }
 
 function timeAgo(timestamp) {
@@ -546,22 +619,221 @@ function timeAgo(timestamp) {
 }
 
 // =============================================================================
-// VIDEO INFO FUNCTIONS
+// CHANNEL API FUNCTIONS - Get channel info and videos
+// =============================================================================
+
+/**
+ * Resolve channel ID using Invidious API
+ * Invidious uses the same ID format as YouTube
+ */
+async function resolveChannelId(channelInfo) {
+  // For handles and custom URLs, we need to search or use the ID directly
+  // Invidious accepts: @handle, channel IDs, user names
+  
+  const searchQueries = [];
+  
+  if (channelInfo.type === 'handle') {
+    searchQueries.push(`@${channelInfo.id}`);
+  } else if (channelInfo.type === 'channel') {
+    // Direct channel ID - should work directly
+    return channelInfo.id;
+  } else if (channelInfo.type === 'user') {
+    searchQueries.push(channelInfo.id);
+  } else if (channelInfo.type === 'custom') {
+    searchQueries.push(channelInfo.id);
+  }
+  
+  // Try to find channel by searching
+  for (const query of searchQueries) {
+    for (const apiBase of CONFIG.APIS) {
+      try {
+        // Try direct channel lookup first
+        const channelUrl = `${apiBase}/api/v1/channels/${query}`;
+        const response = await fetch(channelUrl, {
+          signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.authorId) {
+            return data.authorId;
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+  }
+  
+  // If direct lookup fails, try searching
+  for (const query of searchQueries) {
+    for (const apiBase of CONFIG.APIS) {
+      try {
+        const searchUrl = `${apiBase}/api/v1/search?q=${encodeURIComponent(query)}&type=channel`;
+        const response = await fetch(searchUrl, {
+          signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
+        });
+        
+        if (response.ok) {
+          const results = await response.json();
+          if (results.length > 0 && results[0].authorId) {
+            return results[0].authorId;
+          }
+        }
+      } catch (e) {
+        continue;
+      }
+    }
+  }
+  
+  throw new Error(`Could not resolve channel: ${channelInfo.id}`);
+}
+
+/**
+ * Get channel information
+ */
+async function getChannelInfo(channelUrl) {
+  const channelInfo = extractChannelInfo(channelUrl);
+  if (!channelInfo) throw new Error('Invalid channel URL format');
+  
+  // Try each API instance
+  for (const apiBase of CONFIG.APIS) {
+    try {
+      // Build channel API URL based on type
+      let channelId;
+      if (channelInfo.type === 'handle') {
+        channelId = `@${channelInfo.id}`;
+      } else if (channelInfo.type === 'channel') {
+        channelId = channelInfo.id;
+      } else if (channelInfo.type === 'user') {
+        channelId = channelInfo.id;
+      } else {
+        channelId = channelInfo.id;
+      }
+      
+      const apiUrl = `${apiBase}/api/v1/channels/${channelId}`;
+      const response = await fetch(apiUrl, {
+        signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          id: data.authorId,
+          name: data.author,
+          avatar: data.authorThumbnails?.[2]?.url || data.authorThumbnails?.[0]?.url || '',
+          banner: data.authorBanners?.[0]?.url || '',
+          description: data.description || '',
+          subscriberCount: data.subCount || 0,
+          videoCount: data.videoCount || 0,
+          viewCount: data.totalViews || 0,
+          joined: data.joined || 0,
+          videos: [],
+          source: apiBase
+        };
+      }
+    } catch (e) {
+      console.warn(`Channel info failed on ${apiBase}:`, e.message);
+      continue;
+    }
+  }
+  
+  throw new Error('Could not fetch channel info from any API');
+}
+
+/**
+ * Get ALL videos from a channel (with pagination)
+ */
+async function getChannelVideos(channelId, page = 1, existingVideos = []) {
+  const allVideos = [...existingVideos];
+  
+  for (const apiBase of CONFIG.APIS) {
+    try {
+      const apiUrl = `${apiBase}/api/v1/channels/${channelId}/videos?page=${page}`;
+      const response = await fetch(apiUrl, {
+        signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
+      });
+      
+      if (response.ok) {
+        const videos = await response.json();
+        
+        if (!videos || videos.length === 0) {
+          return { videos: allVideos, hasMore: false, api: apiBase };
+        }
+        
+        // Parse video data
+        const parsedVideos = videos.map(v => ({
+          videoId: v.videoId,
+          title: v.title,
+          thumbnail: v.videoThumbnails?.[2]?.url || v.videoThumbnails?.[0]?.url || 
+                       `${CONFIG.YOUTUBE.THUMBNAIL}/${v.videoId}/mqdefault.jpg`,
+          author: v.author,
+          authorId: v.authorId,
+          lengthSeconds: v.lengthSeconds,
+          viewCount: v.viewCount,
+          publishedText: v.publishedText,
+          url: `https://www.youtube.com/watch?v=${v.videoId}`
+        }));
+        
+        allVideos.push(...parsedVideos);
+        
+        // Check if we have more videos and haven't hit limit
+        const hasMore = videos.length >= 30 && allVideos.length < CONFIG.MAX_CHANNEL_VIDEOS;
+        
+        return { 
+          videos: allVideos, 
+          hasMore, 
+          currentPage: page,
+          api: apiBase 
+        };
+      }
+    } catch (e) {
+      console.warn(`Channel videos failed on ${apiBase}:`, e.message);
+      continue;
+    }
+  }
+  
+  return { videos: allVideos, hasMore: false, error: 'All APIs failed' };
+}
+
+/**
+ * Fetch ALL pages of channel videos
+ */
+async function getAllChannelVideos(channelId) {
+  let allVideos = [];
+  let page = 1;
+  let hasMore = true;
+  
+  while (hasMore && allVideos.length < CONFIG.MAX_CHANNEL_VIDEOS) {
+    const result = await getChannelVideos(channelId, page, allVideos);
+    allVideos = result.videos;
+    hasMore = result.hasMore;
+    page++;
+    
+    // Small delay between requests
+    if (hasMore) {
+      await new Promise(r => setTimeout(r, 500));
+    }
+  }
+  
+  return allVideos.slice(0, CONFIG.MAX_CHANNEL_VIDEOS);
+}
+
+// =============================================================================
+// VIDEO INFO FUNCTIONS (for single video)
 // =============================================================================
 
 async function getVideoInfo(url) {
   const videoId = extractVideoId(url);
-  if (!videoId) throw new Error('Invalid YouTube URL');
+  if (!videoId) throw new Error('Invalid YouTube URL: Could not extract video ID');
 
-  // Try oEmbed first
+  // Try oEmbed first (fastest)
   try {
-    const response = await fetch(
-      `${CONFIG.YOUTUBE.OEMBED}?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
-      { 
-        headers: { Accept: 'application/json' },
-        signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
-      }
-    );
+    const oembedUrl = `${CONFIG.YOUTUBE.OEMBED}?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    const response = await fetch(oembedUrl, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
+    });
     
     if (response.ok) {
       const data = await response.json();
@@ -580,9 +852,9 @@ async function getVideoInfo(url) {
   }
 
   // Fallback to Invidious
-  for (const api of CONFIG.APIS) {
+  for (const apiUrl of CONFIG.APIS) {
     try {
-      const response = await fetch(`${api.url}/api/v1/videos/${videoId}`, {
+      const response = await fetch(`${apiUrl}/api/v1/videos/${videoId}`, {
         signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
       });
       
@@ -596,7 +868,7 @@ async function getVideoInfo(url) {
                      `${CONFIG.YOUTUBE.THUMBNAIL}/${videoId}/maxresdefault.jpg`,
           url,
           duration: parseInt(data.lengthSeconds),
-          source: api.url
+          source: apiUrl
         };
       }
     } catch (e) {
@@ -612,55 +884,6 @@ async function getVideoInfo(url) {
     url,
     duration: null,
     source: 'fallback'
-  };
-}
-
-async function getVideoFormats(url) {
-  const videoId = extractVideoId(url);
-  if (!videoId) throw new Error('Invalid YouTube URL');
-
-  for (const api of CONFIG.APIS) {
-    try {
-      const response = await fetch(`${api.url}/api/v1/videos/${videoId}`, {
-        signal: AbortSignal.timeout(CONFIG.INFO_TIMEOUT)
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        const formats = [...(data.adaptiveFormats || []), ...(data.formatStreams || [])];
-        
-        return {
-          id: videoId,
-          formats: formats
-            .filter(f => f.url)
-            .map((f, i) => ({
-              itag: f.itag || `${i}`,
-              format: f.type?.split(';')[0] || 'mp4',
-              quality: f.qualityLabel || f.quality || 'unknown',
-              filesize: f.contentLength ? parseInt(f.contentLength) : null,
-              vcodec: f.encoding || 'avc1',
-              acodec: f.type?.includes('audio') ? 'mp4a' : 'none',
-              url: f.url,
-              type: f.type
-            }))
-            .sort((a, b) => parseQualityValue(a.quality) - parseQualityValue(b.quality)),
-          source: api.url
-        };
-      }
-    } catch (e) {
-      continue;
-    }
-  }
-
-  return {
-    id: videoId,
-    formats: [
-      { itag: '144', quality: '144p', format: 'mp4', vcodec: 'avc1', acodec: 'mp4a' },
-      { itag: '360', quality: '360p', format: 'mp4', vcodec: 'avc1', acodec: 'mp4a' },
-      { itag: '720', quality: '720p', format: 'mp4', vcodec: 'avc1', acodec: 'mp4a' },
-      { itag: '1080', quality: '1080p', format: 'mp4', vcodec: 'avc1', acodec: 'mp4a' }
-    ],
-    source: 'generic'
   };
 }
 
@@ -700,56 +923,88 @@ function corsResponse() {
 }
 
 /**
- * STREAM VIDEO - Proxy/redirect to actual video file
+ * STREAM VIDEO FILE - Proxy and stream actual video to client
  */
-async function streamVideo(download) {
+async function streamVideoFile(download) {
+  if (!download) {
+    return errorResponse('Download not found', 404);
+  }
+  
+  if (download.status !== 'completed') {
+    return errorResponse(`Download not ready yet (status: ${download.status})`, 400);
+  }
+  
   if (!download.directUrl) {
-    return errorResponse('Download not ready yet', 400);
+    return errorResponse('No download URL available. Please try again.', 500);
   }
 
   try {
-    // Fetch the actual video from Invidious/YouTube
-    const response = await fetch(download.directUrl, {
+    console.log(`📥 Streaming video: ${download.title}`);
+    console.log(`   Source: ${download.directUrl.substring(0, 50)}...`);
+
+    const videoResponse = await fetch(download.directUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': '*/*',
-        'Range': 'bytes=0-'
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.youtube.com/',
+        'Origin': 'https://www.youtube.com'
       },
       signal: AbortSignal.timeout(CONFIG.DOWNLOAD_TIMEOUT)
     });
 
-    if (!response.ok) {
-      throw new Error(`Failed to fetch video: ${response.status}`);
+    if (!videoResponse.ok) {
+      throw new Error(`Video source returned: ${videoResponse.status} ${videoResponse.statusText}`);
     }
 
-    // Get content type from response or use stored
-    const contentType = response.headers.get('content-type') || download.contentType || 'video/mp4';
-    const contentLength = response.headers.get('content-length');
+    const contentType = videoResponse.headers.get('content-type') || 
+                       download.contentType || 
+                       'video/mp4';
+    const contentLength = videoResponse.headers.get('content-length');
     
-    // Generate filename
-    const filename = sanitizeFilename(download.title) + '.' + (download.format || 'mp4');
+    const ext = contentType.includes('mp4') ? 'mp4' : 
+                 contentType.includes('webm') ? 'webm' : 
+                 download.format || 'mp4';
+    const filename = `${sanitizeFilename(download.title)}.${ext}`;
 
-    // Return streamed response
-    return new Response(response.body, {
+    console.log(`   Content-Type: ${contentType}`);
+    console.log(`   Size: ${contentLength ? formatBytes(parseInt(contentLength)) : 'unknown'}`);
+    console.log(`   Filename: ${filename}`);
+
+    return new Response(videoResponse.body, {
       status: 200,
       headers: {
         'Content-Type': contentType,
         'Content-Disposition': `attachment; filename="${filename}"`,
         'Content-Length': contentLength || '',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
         'Access-Control-Allow-Origin': '*',
-        'Accept-Ranges': 'bytes'
+        'Accept-Ranges': 'bytes',
+        'X-Content-Duration': download.duration?.toString(),
+        'X-Video-Title': encodeURIComponent(download.title)
       }
     });
 
   } catch (error) {
-    console.error('Stream error:', error);
-    return errorResponse(`Stream failed: ${error.message}`, 500);
+    console.error('❌ Stream error:', error);
+    
+    let errorMessage = error.message;
+    if (error.name === 'TimeoutError' || error.message.includes('timeout')) {
+      errorMessage = 'Download timed out. The video may be too large or the server is slow.';
+    } else if (error.message.includes('403')) {
+      errorMessage = 'Access denied. This video may be region-restricted.';
+    } else if (error.message.includes('404')) {
+      errorMessage = 'Video not found. It may have been deleted.';
+    }
+    
+    return errorResponse(`Download failed: ${errorMessage}`, 500);
   }
 }
 
 // =============================================================================
-// FRONTEND HTML
+// FRONTEND HTML - Beautiful UI for Channel Downloads
 // =============================================================================
 
 function getFrontendHTML() {
@@ -758,17 +1013,29 @@ function getFrontendHTML() {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YouTube Downloader - Real Downloads</title>
+  <title>🎬 YouTube Channel Downloader - Download All Videos</title>
+  <meta name="description" content="Download all videos from any YouTube channel for free">
   <style>
-    :root{--primary:#667eea;--secondary:#764ba2;--success:#11998e;--danger:#eb3349;--warning:#f093fb;--bg:#1a1a2e;--bg2:#16213e;--tx:#fff;--tx2:#a0aec0;--border:rgba(255,255,255,.1);--r:12px;--sh:0 4px 15px rgba(0,0,0,.2)}
+    :root{
+      --primary:#667eea;--secondary:#764ba2;--success:#11998e;--danger:#eb3349;
+      --warning:#f093fb;--bg:#0f0f23;--bg2:#1a1a3e;--bg3:#252550;--tx:#fff;
+      --tx2:#a0aec0;--border:rgba(255,255,255,.1);--r:12px;--sh:0 4px 15px rgba(0,0,0,.3)
+    }
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,var(--bg),#0f3460);color:var(--tx);min-height:100vh;line-height:1.6}
-    .container{max-width:960px;margin:0 auto;padding:20px}
-    .header{text-align:center;padding:40px 30px;background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);margin-bottom:30px}
-    .header h1{font-size:2.5rem;background:linear-gradient(135deg,var(--primary),var(--secondary));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
-    .badge{display:inline-block;background:linear-gradient(135deg,var(--success),#38ef7d);color:#fff;padding:4px 14px;border-radius:20px;font-size:12px;font-weight:700;margin:5px;text-transform:uppercase}
-    .badge-real{background:linear-gradient(135deg,var(--warning),var(--secondary))}
-    .input-section{background:var(--bg2);padding:30px;border-radius:var(--r);box-shadow:var(--sh);margin-bottom:30px}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:linear-gradient(135deg,var(--bg),#1a1a3e);color:var(--tx);min-height:100vh;line-height:1.6}
+    .container{max-width:1100px;margin:0 auto;padding:20px}
+    
+    /* Header */
+    .header{text-align:center;padding:40px 30px;background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);margin-bottom:25px;border:1px solid var(--border)}
+    .header h1{font-size:2.5rem;background:linear-gradient(135deg,#667eea,#764ba2,#f093fb);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:10px}
+    .header p{color:var(--tx2);font-size:1.1rem}
+    .badge{display:inline-block;padding:6px 16px;border-radius:20px;font-size:12px;font-weight:700;margin:5px;text-transform:uppercase;letter-spacing:.5px}
+    .badge-channel{background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff}
+    .badge-real{background:linear-gradient(135deg,var(--success),#38ef7d);color:#fff}
+    
+    /* Input Section */
+    .input-section{background:var(--bg2);padding:30px;border-radius:var(--r);box-shadow:var(--sh);margin-bottom:25px;border:1px solid var(--border)}
+    .input-label{font-weight:600;margin-bottom:12px;color:var(--tx2);text-transform:uppercase;letter-spacing:1px;font-size:.85rem}
     .input-group{display:flex;gap:12px;flex-wrap:wrap}
     .url-input{flex:1;min-width:300px;padding:16px 20px;border:2px solid var(--border);border-radius:var(--r);background:rgba(255,255,255,.05);color:var(--tx);font-size:16px;transition:.3s}
     .url-input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 20px rgba(102,126,234,.3)}
@@ -776,175 +1043,522 @@ function getFrontendHTML() {
     .btn-primary{background:linear-gradient(135deg,var(--primary),var(--secondary));color:#fff}
     .btn-primary:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px rgba(102,126,234,.4)}
     .btn-primary:disabled{opacity:.6;cursor:not-allowed}
+    .btn-success{background:linear-gradient(135deg,var(--success),#38ef7d);color:#fff}
+    .btn-success:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 25px rgba(17,153,142,.4)}
     .quality-select{padding:16px 20px;border:2px solid var(--border);border-radius:var(--r);background:rgba(255,255,255,.05);color:var(--tx);font-size:16px;cursor:pointer}
-    .error-msg{background:rgba(235,51,73,.1);border:1px solid var(--danger);color:var(--danger);padding:12px 16px;border-radius:8px;margin-top:15px;display:none}
-    .error-msg.show{display:block}
-    .preview{display:none;background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);padding:25px;margin-top:20px}
-    .preview.show{display:block}
-    .preview-content{display:flex;gap:20px;align-items:flex-start}
-    .preview-thumb{width:160px;height:90px;object-fit:cover;border-radius:8px}
-    .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:15px;margin-bottom:30px}
-    .stat-card{background:var(--bg2);padding:20px;border-radius:var(--r);text-align:center;box-shadow:var(--sh)}
-    .stat-value{font-size:2rem;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--secondary));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
-    .stat-label{font-size:.85rem;color:var(--tx2);margin-top:5px;text-transform:uppercase}
-    .downloads{background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);overflow:hidden}
+    
+    /* Error Messages */
+    .error-msg{background:rgba(235,51,73,.15);border:1px solid var(--danger);color:var(--danger);padding:14px 18px;border-radius:8px;margin-top:15px;display:none}
+    .error-msg.show{display:block;animation:slideIn .3s ease}
+    .success-msg{background:rgba(17,153,142,.15);border:1px solid var(--success);color:var(--success);padding:14px 18px;border-radius:8px;margin-top:15px;display:none}
+    .success-msg.show{display:block;animation:slideIn .3s ease}
+    @keyframes slideIn{from{opacity:0;transform:translateY(-10px)}to{opacity:1;transform:translateY(0)}}
+    
+    /* Channel Info Card */
+    .channel-info{display:none;background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);padding:25px;margin-bottom:25px;border:1px solid var(--border);animation:fadeIn .4s ease}
+    .channel-info.show{display:block}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+    .channel-header{display:flex;align-items:center;gap:20px;margin-bottom:20px}
+    .channel-avatar{width:80px;height:80px;border-radius:50%;object-fit:cover;border:3px solid var(--primary)}
+    .channel-details h2{font-size:1.6rem;margin-bottom:5px}
+    .channel-stats{display:flex;gap:20px;flex-wrap:wrap}
+    .channel-stat{text-align:center;padding:10px 20px;background:var(--bg3);border-radius:8px}
+    .channel-stat-value{font-size:1.3rem;font-weight:700;color:var(--primary)}
+    .channel-stat-label{font-size:.8rem;color:var(--tx2);text-transform:uppercase}
+    
+    /* Toolbar */
+    .toolbar{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:15px;margin-bottom:20px;padding:15px 20px;background:var(--bg3);border-radius:8px}
+    .toolbar-left{display:flex;align-items:center;gap:15px}
+    .toolbar-right{display:flex;gap:10px}
+    .select-all{cursor:pointer;display:flex;align-items:center;gap:8px;font-weight:600;color:var(--tx2)}
+    .select-all input{width:18px;height:18px;accent-color:var(--primary)}
+    .selected-count{color:var(--primary);font-weight:600}
+    
+    /* Video Grid */
+    .videos-container{display:none}
+    .videos-container.show{display:block}
+    .videos-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}
+    .video-card{background:var(--bg2);border-radius:var(--r);overflow:hidden;border:1px solid var(--border);transition:.3s;position:relative}
+    .video-card:hover{transform:translateY(-4px);box-shadow:0 8px 25px rgba(102,126,234,.2);border-color:var(--primary)}
+    .video-card.selected{border-color:var(--success);box-shadow:0 0 0 2px rgba(17,153,142,.3)}
+    .video-thumb-wrap{position:relative;aspect-ratio:16/9;overflow:hidden}
+    .video-thumb{width:100%;height:100%;object-fit:cover;transition:.3s}
+    .video-card:hover .video-thumb{transform:scale(1.05)}
+    .video-duration{position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,.85);color:#fff;padding:3px 8px;border-radius:4px;font-size:.8rem;font-weight:600}
+    .video-checkbox{position:absolute;top:10px;left:10px;width:24px;height:24px;accent-color:var(--success);cursor:pointer;z-index:10}
+    .video-info{padding:15px}
+    .video-title{font-weight:600;font-size:.95rem;line-height:1.4;margin-bottom:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:44px}
+    .video-meta{display:flex;justify-content:space-between;font-size:.8rem;color:var(--tx2)}
+    
+    /* Loading */
+    .loading{text-align:center;padding:60px 20px}
+    .spinner{display:inline-block;width:40px;height:40px;border:4px solid rgba(255,255,255,.1);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .loading-text{margin-top:15px;color:var(--tx2)}
+    
+    /* Downloads Section */
+    .downloads-section{background:var(--bg2);border-radius:var(--r);box-shadow:var(--sh);margin-top:25px;border:1px solid var(--border);overflow:hidden}
     .downloads-header{padding:20px 25px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
-    .downloads-list{list-style:none;max-height:600px;overflow-y:auto}
-    .download-item{padding:20px 25px;border-bottom:1px solid rgba(255,255,255,.05);transition:.2s}
+    .downloads-list{list-style:none;max-height:500px;overflow-y:auto}
+    .download-item{padding:18px 25px;border-bottom:1px solid rgba(255,255,255,.03);transition:.2s}
     .download-item:hover{background:rgba(255,255,255,.02)}
-    .download-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+    .download-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
     .download-info{flex:1;min-width:0}
-    .download-title{font-weight:600;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .download-title{font-weight:600;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .download-meta{font-size:.85rem;color:var(--tx2)}
-    .status-badge{padding:4px 12px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase}
+    .status-badge{padding:4px 12px;border-radius:20px;font-size:.75rem;font-weight:600;text-transform:uppercase;letter-spacing:.5px}
     .status-queued{background:rgba(240,147,251,.2);color:var(--warning)}
     .status-downloading{background:rgba(102,126,234,.2);color:var(--primary)}
     .status-completed{background:rgba(17,153,142,.2);color:var(--success)}
     .status-failed{background:rgba(235,51,73,.2);color:var(--danger)}
     .status-cancelled{background:rgba(160,160,160,.2);color:var(--tx2)}
-    .progress-container{margin-top:12px}
-    .progress-bar{height:8px;background:rgba(255,255,255,.1);border-radius:4px;overflow:hidden}
-    .progress-fill{height:100%;background:linear-gradient(90deg,var(--primary),var(--secondary));border-radius:4px;transition:.3s}
-    .progress-info{display:flex;justify-content:space-between;margin-top:8px;font-size:.8rem;color:var(--tx2)}
-    .action-buttons{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+    .status-retrying{background:rgba(240,147,251,.2);color:var(--warning)}
+    .progress-container{margin-top:10px}
+    .progress-bar{height:6px;background:rgba(255,255,255,.1);border-radius:3px;overflow:hidden}
+    .progress-fill{height:100%;background:linear-gradient(90deg,var(--primary),var(--secondary));border-radius:3px;transition:.3s}
+    .progress-info{display:flex;justify-content:space-between;margin-top:6px;font-size:.8rem;color:var(--tx2)}
+    .action-buttons{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
     .action-btn{padding:6px 14px;font-size:.8rem;border-radius:8px;border:1px solid currentColor;cursor:pointer;transition:.2s;background:transparent;color:inherit}
     .action-btn:hover{transform:translateY(-1px)}
     .btn-download{color:var(--success)}.btn-download:hover{background:rgba(17,153,142,.2)}
     .btn-cancel{color:var(--danger)}.btn-cancel:hover{background:rgba(235,51,73,.2)}
     .btn-retry{color:var(--primary)}.btn-retry:hover{background:rgba(102,126,234,.2)}
     .btn-remove{color:var(--tx2)}.btn-remove:hover{background:rgba(160,160,160,.2)}
-    .empty-state{text-align:center;padding:60px 20px;color:var(--tx2)}
-    .empty-icon{font-size:4rem;margin-bottom:20px;opacity:.5}
-    @media(max-width:600px){
+    
+    /* Empty State */
+    .empty-state{text-align:center;padding:50px 20px;color:var(--tx2)}
+    .empty-icon{font-size:3rem;margin-bottom:15px;opacity:.5}
+    
+    /* Stats Bar */
+    .stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:15px;margin-bottom:25px}
+    .stat-card{background:var(--bg2);padding:18px;border-radius:var(--r);text-align:center;box-shadow:var(--sh);border:1px solid var(--border)}
+    .stat-value{font-size:1.8rem;font-weight:700;background:linear-gradient(135deg,var(--primary),var(--secondary));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+    .stat-label{font-size:.8rem;color:var(--tx2);margin-top:5px;text-transform:uppercase}
+    
+    /* Responsive */
+    @media(max-width:768px){
       .header h1{font-size:1.8rem}.input-group{flex-direction:column}.url-input{min-width:100%}
-      .preview-content{flex-direction:column}.preview-thumb{width:100%;height:auto}
+      .channel-header{flex-direction:column;text-align:center}.channel-avatar{width:60px;height:60px}
+      .videos-grid{grid-template-columns:1fr}.toolbar{flex-direction:column;text-align:center}
     }
   </style>
 </head>
 <body>
 <div class="container">
+  <!-- Header -->
   <header class="header">
-    <h1>🎬 YouTube Downloader</h1>
-    <span class="badge">v${CONFIG.VERSION}</span>
-    <span class="badge badge-real">✓ REAL Downloads</span>
-    <p>Actual video files via Invidious API • Multiple qualities • Direct download</p>
+    <h1>🎬 YouTube Channel Downloader</h1>
+    <p>Paste a channel URL & download ALL videos at once</p>
+    <span class="badge badge-channel">v${CONFIG.VERSION}</span>
+    <span class="badge badge-real">✓ Real Downloads</span>
   </header>
 
+  <!-- Input Section -->
   <section class="input-section">
+    <div class="input-label">📺 Enter YouTube Channel URL</div>
     <div class="input-group">
-      <input type="url" class="url-input" id="urlInput" placeholder="Paste YouTube URL..." autocomplete="off">
+      <input type="url" class="url-input" id="channelInput" placeholder="youtube.com/@channelName OR youtube.com/c/ChannelName OR youtube.com/channel/UC..." autocomplete="off">
       <select class="quality-select" id="qualitySelect">
-        <option value="worst">360p (Smallest)</option>
+        <option value="low">360p (Fast)</option>
         <option value="medium" selected>720p (Recommended)</option>
         <option value="high">1080p (HD)</option>
-        <option value="best">Best Quality</option>
-        <option value="audio-m4a">Audio Only (M4A)</option>
+        <option value="audio-m4a">🎵 Audio Only</option>
       </select>
-      <button class="btn btn-primary" id="downloadBtn" onclick="startDownload()">⬇️ Download</button>
+      <button class="btn btn-primary" id="fetchBtn" onclick="fetchChannel()">🔍 Load Channel</button>
     </div>
     <div class="error-msg" id="errorMsg"></div>
-    <div class="preview" id="preview">
-      <div class="preview-content">
-        <img class="preview-thumb" id="previewThumb" alt="">
-        <div>
-          <div style="font-weight:600;font-size:1.1rem;margin-bottom:8px" id="previewTitle"></div>
-          <div style="color:var(--tx2);font-size:.9rem" id="previewMeta"></div>
-        </div>
+    <div class="success-msg" id="successMsg"></div>
+  </section>
+
+  <!-- Channel Info (shown after fetch) -->
+  <section class="channel-info" id="channelInfo">
+    <div class="channel-header">
+      <img class="channel-avatar" id="channelAvatar" alt="" onerror="this.style.display='none'">
+      <div class="channel-details">
+        <h2 id="channelName">Channel Name</h2>
+        <div style="color:var(--tx2)" id="channelDesc"></div>
       </div>
+    </div>
+    <div class="channel-stats">
+      <div class="channel-stat"><div class="channel-stat-value" id="subCount">-</div><div class="channel-stat-label">Subscribers</div></div>
+      <div class="channel-stat"><div class="channel-stat-value" id="videoCount">-</div><div class="channel-stat-label">Videos</div></div>
+      <div class="channel-stat"><div class="channel-stat-value" id="viewCount">-</div><div class="channel-stat-label">Total Views</div></div>
     </div>
   </section>
 
-  <section class="stats-grid" id="statsGrid">
+  <!-- Videos Container -->
+  <section class="videos-container" id="videosContainer">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <label class="select-all">
+          <input type="checkbox" id="selectAll" onchange="toggleSelectAll()">
+          <span>Select All (<span id="totalVideos">0</span>)</span>
+        </label>
+        <span class="selected-count"><span id="selectedCount">0</span> selected</span>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-success" onclick="downloadSelected()" id="downloadSelectedBtn" disabled>⬇️ Download Selected</button>
+      </div>
+    </div>
+    <div class="videos-grid" id="videosGrid"></div>
+  </section>
+
+  <!-- Loading State -->
+  <div class="loading" id="loadingState" style="display:none">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loadingText">Fetching channel...</div>
+  </div>
+
+  <!-- Stats -->
+  <section class="stats-bar" id="statsBar" style="display:none">
     <div class="stat-card"><div class="stat-value" id="statTotal">0</div><div class="stat-label">Total</div></div>
     <div class="stat-card"><div class="stat-value" id="statActive">0</div><div class="stat-label">Active</div></div>
     <div class="stat-card"><div class="stat-value" id="statCompleted">0</div><div class="stat-label">Done</div></div>
     <div class="stat-card"><div class="stat-value" id="statFailed">0</div><div class="stat-label">Failed</div></div>
   </section>
 
-  <section class="downloads">
+  <!-- Downloads List -->
+  <section class="downloads-section" id="downloadsSection" style="display:none">
     <div class="downloads-header">
-      <span style="font-size:1.2rem;font-weight:600">📥 Downloads</span>
+      <span style="font-size:1.2rem;font-weight:600">📥 Download Queue</span>
       <button class="action-btn btn-remove" onclick="clearCompleted()">Clear Done</button>
     </div>
     <ul class="downloads-list" id="downloadsList">
-      <li class="empty-state"><div class="empty-icon">📭</div><p>Paste a URL to start downloading</p></li>
+      <li class="empty-state">
+        <div class="empty-icon">📭</div>
+        <p>No downloads yet</p>
+      </li>
     </ul>
   </section>
 </div>
 
 <script>
-let refreshInterval=null;
-document.addEventListener('DOMContentLoaded',()=>{refreshList();refreshInterval=setInterval(refreshList,2000);document.getElementById('urlInput').addEventListener('keypress',e=>{if(e.key==='Enter')startDownload();});});
+let channelVideos=[];
+let selectedVideos=new Set();
 
-async function startDownload(){
-  const url=document.getElementById('urlInput').value.trim();
-  const quality=document.getElementById('qualitySelect').value;
-  const btn=document.getElementById('downloadBtn');
-  if(!url)return showError('Please enter a URL');
-  if(!isValidUrl(url))return showError('Invalid YouTube URL');
-  btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';hideError();hidePreview();
+document.addEventListener('DOMContentLoaded',()=>{
+  document.getElementById('channelInput').addEventListener('keypress',e=>{
+    if(e.key==='Enter')fetchChannel();
+  });
+});
+
+// ========== CHANNEL FUNCTIONS ==========
+
+async function fetchChannel(){
+  const url=document.getElementById('channelInput').value.trim();
+  const btn=document.getElementById('fetchBtn');
+  
+  if(!url)return showError('Please enter a YouTube channel URL');
+  if(!isValidChannelUrl(url))return showError('Invalid YouTube channel URL. Use @handle, /c/, /channel/, or /user/ format');
+  
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span>';
+  hideMessages();
+  showLoading(true,'Resolving channel...');
+  hideChannelInfo();
+  hideVideos();
+  
   try{
-    const info=await api('/api/info',{url});
-    showPreview(info);
-    const res=await api('/api/download',{url,q:quality,t:info.title,th:info.thumbnail,a:info.author,d:info.duration,f:quality.includes('audio')?'m4a':'mp4'});
-    if(res.success){document.getElementById('urlInput').value='';hidePreview();refreshList();}
-    else showError(res.error||'Failed');
-  }catch(e){showError(e.message);}
-  finally{btn.disabled=false;btn.innerHTML='⬇️ Download';}
+    // Step 1: Get channel info
+    showLoading(true,'Fetching channel info...');
+    const infoRes=await api('/api/channel/info',{url});
+    if(!infoRes.ok)throw new Error(infoRes.error||'Failed to fetch channel');
+    
+    const channel=infoRes.data;
+    showChannelInfo(channel);
+    
+    // Step 2: Get all videos
+    showLoading(true,\`Loading \${channel.videoCount||'all'} videos...\`);
+    const videosRes=await api('/api/channel/videos',{channelId:channel.id});
+    if(!videosRes.ok)throw new Error(videosRes.error||'Failed to fetch videos');
+    
+    channelVideos=videosRes.videos||[];
+    showVideos(channelVideos);
+    showSuccess(\`Loaded \${channelVideos.length} videos from \${channel.name}\`);
+    document.getElementById('statsBar').style.display='grid';
+    
+  }catch(e){
+    showError(e.message||'An error occurred');
+  }finally{
+    btn.disabled=false;
+    btn.innerHTML='🔍 Load Channel';
+    showLoading(false);
+  }
 }
 
-async function api(ep,body){
-  const r=await fetch(ep,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  return r.json();
+function isValidChannelUrl(u){
+  return u.includes('youtube.com/@')||u.includes('youtube.com/c/')||
+         u.includes('youtube.com/channel/')||u.includes('youtube.com/user/');
 }
 
-function isValidUrl(u){return u.includes('youtube.com')||u.includes('youtu.be');}
-function showPreview(i){document.getElementById('previewThumb').src=i.thumbnail||'';document.getElementById('previewTitle').textContent=i.title||'';document.getElementById('previewMeta').innerHTML=\`By \${i.author||'?'} \${i.duration?'• '+fmtTime(i.duration):''}\`;document.getElementById('preview').classList.add('show');}
-function hidePreview(){document.getElementById('preview').classList.remove('show');}
-function showError(m){document.getElementById('errorMsg').textContent=m;document.getElementById('errorMsg').classList.add('show');}
-function hideError(){document.getElementById('errorMsg').classList.remove('show');}
+function showChannelInfo(c){
+  document.getElementById('channelAvatar').src=c.avatar||'';
+  document.getElementById('channelName').textContent=c.name||'Unknown Channel';
+  document.getElementById('channelDesc').textContent=(c.description||'').substring(0,150)+(c.description&&c.description.length>150?'...':'');
+  document.getElementById('subCount').textContent=formatNum(c.subscriberCount);
+  document.getElementById('videoCount').textContent=formatNum(c.videoCount);
+  document.getElementById('viewCount').textContent=formatNum(c.viewCount);
+  document.getElementById('channelInfo').classList.add('show');
+}
+
+function hideChannelInfo(){
+  document.getElementById('channelInfo').classList.remove('show');
+}
+
+function showVideos(videos){
+  const grid=document.getElementById('videosGrid');
+  document.getElementById('totalVideos').textContent=videos.length;
+  
+  grid.innerHTML=videos.map((v,i)=>'<div class="video-card" id="card-'+i+'">'+
+    '<input type="checkbox" class="video-checkbox" value="'+i+'" onchange="toggleVideo('+i+')">'+
+    '<div class="video-thumb-wrap">'+
+      '<img class="video-thumb" src="'+esc(v.thumbnail)+'" alt="" loading="lazy" onerror="this.src=\'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 320 180%22><rect fill=%22%23252550%22 width=%22320%22 height=%22180%22/><text fill=%22%23666%22 x=%2250%%22 y=%2250%%22 dominant-baseline=%22middle%22 text-anchor=%22middle%22>No Image</text></svg>\'">'+
+      '<span class="video-duration">'+fmtTime(v.lengthSeconds)+'</span>'+
+    '</div>'+
+    '<div class="video-info">'+
+      '<div class="video-title">'+esc(v.title)+'</div>'+
+      '<div class="video-meta">'+
+        '<span>'+formatNum(v.viewCount)+' views</span>'+
+        '<span>'+esc(v.publishedText)+'</span>'+
+      '</div>'+
+    '</div>'+
+  '</div>').join('');
+  
+  document.getElementById('videosContainer').classList.add('show');
+}
+
+function hideVideos(){
+  document.getElementById('videosContainer').classList.remove('show');
+  channelVideos=[];
+  selectedVideos.clear();
+  updateSelectedCount();
+}
+
+function toggleVideo(index){
+  if(selectedVideos.has(index)){
+    selectedVideos.delete(index);
+    document.getElementById('card-'+index).classList.remove('selected');
+  }else{
+    selectedVideos.add(index);
+    document.getElementById('card-'+index).classList.add('selected');
+  }
+  updateSelectedCount();
+}
+
+function toggleSelectAll(){
+  const checked=document.getElementById('selectAll').checked;
+  channelVideos.forEach((_,i)=>{
+    if(checked){
+      selectedVideos.add(i);
+      document.getElementById('card-'+i)?.classList.add('selected');
+    }else{
+      selectedVideos.delete(i);
+      document.getElementById('card-'+i)?.classList.remove('selected');
+    }
+  });
+  updateSelectedCount();
+}
+
+function updateSelectedCount(){
+  document.getElementById('selectedCount').textContent=selectedVideos.size;
+  document.getElementById('downloadSelectedBtn').disabled=selectedVideos.size===0;
+  document.getElementById('selectAll').checked=selectedVideos.size===channelVideos.length&&channelVideos.length>0;
+}
+
+// ========== DOWNLOAD FUNCTIONS ==========
+
+async function downloadSelected(){
+  if(selectedVideos.size===0)return;
+  
+  const quality=document.getElementById('qualitySelect').value;
+  const btn=document.getElementById('downloadSelectedBtn');
+  const videosToDownload=[...selectedVideos].map(i=>channelVideos[i]).filter(Boolean);
+  
+  btn.disabled=true;
+  btn.innerHTML='<span class="spinner"></span> Starting...';
+  hideMessages();
+  document.getElementById('downloadsSection').style.display='block';
+  
+  let success=0;
+  let failed=0;
+  
+  for(const video of videosToDownload){
+    try{
+      const res=await api('/api/download',{
+        url:video.url,
+        q:quality,
+        t:video.title,
+        th:video.thumbnail,
+        a:video.author,
+        d:video.lengthSeconds,
+        f:quality.includes('audio')?'m4a':'mp4'
+      });
+      
+      if(res.success||res.ok)success++;
+      else failed++;
+    }catch(e){
+      failed++;
+    }
+  }
+  
+  showSuccess(\`Queued \${success} videos for download\${failed>0?' ('+failed+' failed)':''}\`);
+  btn.disabled=false;
+  btn.innerHTML='⬇️ Download Selected';
+  
+  // Start refreshing download list
+  if(typeof refreshInterval!=='undefined')clearInterval(refreshInterval);
+  refreshList();
+  refreshInterval=setInterval(refreshList,3000);
+}
+
+// ========== DOWNLOAD LIST FUNCTIONS ==========
+
+let refreshInterval=null;
 
 async function refreshList(){
   try{
-    const r=await fetch('/api/list'),d=await.json?await r.json():await r.json();
-    render(d.downloads||[]);updateStats(d.stats||{});
+    const response=await fetch('/api/list');
+    const data=await response.json();
+    renderDownloads(data.downloads||[]);
+    updateStats(data.stats||{});
+    if(data.downloads&&data.downloads.length>0){
+      document.getElementById('downloadsSection').style.display='block';
+    }
   }catch(e){}
 }
 
-function render(downloads){
+function renderDownloads(downloads){
   const list=document.getElementById('downloadsList');
-  if(!downloads.length){list.innerHTML='<li class="empty-state"><div class="empty-icon">📭</div><p>No downloads yet</p></li>';return;}
-  list.innerHTML=downloads.map(d=>\`
-    <li class="download-item" id="dl-\${d.id}">
-      <div class="download-header">
-        <div class="download-info">
-          <div class="download-title">\${esc(d.title)}</div>
-          <div class="download-meta">\${d.author||''} • \${timeAgo(d.createdAt)}</div>
-        </div>
-        <span class="status-badge status-\${d.status}">\${d.status}</span>
-      </div>
-      \${['downloading','queued','retrying'].includes(d.status)?\`<div class="progress-container"><div class="progress-bar"><div class="progress-fill" style="width:\${d.progress||0}%"></div></div><div class="progress-info"><span>\${d.progress||0}%</span><span>\${d.speed||''}</span><span>\${d.eta||''}</span></div></div>\`:\`\`}
-      \${d.error?\`<div style="color:var(--danger);font-size:.85rem;margin-top:8px">❌ \${esc(d.error)}</div>\`:\`\`}
-      <div class="action-buttons">
-        \${d.status==='completed'&&d.directUrl?\`<a href="/api/download-file/\${d.id}" class="action-btn btn-download" target="_blank">💾 Download File</a><button class="action-btn btn-remove" onclick="send('/api/cancel/'+\${d.id}')">Remove</button>\`:\`\`}
-        \${['downloading','queued'].includes(d.status)?\`<button class="action-btn btn-cancel" onclick="send('/api/cancel/'+\${d.id})">Cancel</button>\`:\`\`}
-        \${d.status==='failed'? \`<button class="action-btn btn-retry" onclick="send('/api/retry/'+\${d.id})">Retry (\${d.retries||0}/\${d.maxRetries||3})</button>\`:\`\`}
-        \${['cancelled','failed'].includes(d.status)&&d.status!=='completed'? \`<button class="action-btn btn-remove" onclick="send('/api/cancel/'+\${d.id})">Remove</button>\`:\`\`}
-      </div>
-    </li>\`).join('');
+  
+  if(!downloads.length){
+    list.innerHTML='<li class="empty-state"><div class="empty-icon">📭</div><p>No active downloads</p></li>';
+    return;
+  }
+  
+  list.innerHTML=downloads.map(d=>{
+    const isActive=['downloading','queued','retrying'].includes(d.status);
+    const isComplete=d.status==='completed'&&d.directUrl;
+    
+    return '<li class="download-item" id="dl-'+d.id+'">'+
+      '<div class="download-header">'+
+        '<div class="download-info">'+
+          '<div class="download-title">'+esc(d.title)+'</div>'+
+          '<div class="download-meta">'+(d.author||'')+' • '+timeAgo(d.createdAt)+'</div>'+
+        '</div>'+
+        '<span class="status-badge status-'+d.status+'">'+d.status+'</span>'+
+      '</div>'+
+      
+      (isActive?
+        '<div class="progress-container">'+
+          '<div class="progress-bar"><div class="progress-fill" style="width:'+(d.progress||0)+'%"></div></div>'+
+          '<div class="progress-info">'+
+            '<span>'+(d.progress||0)+'%</span>'+
+            '<span>'+(d.speed||'')+'</span>'+
+            '<span>'+(d.eta||'')+'</span>'+
+          '</div>'+
+        '</div>'
+      :'')+
+      
+      (d.error?'<div style="color:var(--danger);font-size:.85rem;margin-top:8px">❌ '+esc(d.error)+'</div>':'')+
+      
+      '<div class="action-buttons">'+
+        (isComplete?
+          '<a href="/api/download-file/'+d.id+'" class="action-btn btn-download" target="_blank">💾 Download File</a>'+
+          '<button class="action-btn btn-remove" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Remove</a>'
+        :'')+
+        
+        (isActive?
+          '<button class="action-btn btn-cancel" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Cancel</button>'
+        :'')+
+        
+        (d.status==='failed'?
+          '<button class="action-btn btn-retry" onclick="sendAction(\'/api/retry/'+d.id+'\')">Retry</button>'
+        :'')+
+        
+        (['cancelled','failed'].includes(d.status)&&!isComplete?
+          '<button class="action-btn btn-remove" onclick="sendAction(\'/api/cancel/'+d.id+'\')">Remove</button>'
+        :'')+
+      '</div>'+
+    '</li>';
+  }).join('');
 }
 
-function updateStats(s){document.getElementById('statTotal').textContent=s.total||0;document.getElementById('statActive').textContent=(s.active||0)+(s.queued||0);document.getElementById('statCompleted').textContent=s.completed||0;document.getElementById('statFailed').textContent=s.failed||0;}
+function updateStats(s){
+  document.getElementById('statTotal').textContent=s.total||0;
+  document.getElementById('statActive').textContent=(s.active||0)+(s.queued||0);
+  document.getElementById('statCompleted').textContent=s.completed||0;
+  document.getElementById('statFailed').textContent=s.failed||0;
+}
 
-async function send(url){try{await fetch(url,{method:'POST'});refreshList();}catch(e){}}
-async function clearCompleted(){try{await fetch('/api/clear',{method:'DELETE'});refreshList();}catch(e){}}
-function fmtBytes(b){if(!b)return'0B';const u=['B','KB','MB','GB'],i=Math.floor(Math.log(b)/Math.log(1024));return(b/Math.pow(1024,i)).toFixed(2)+' '+u[i];}
-function fmtTime(s){if(!s)return'--:--';return Math.floor(s/60)+':'+(s%60).toString().padStart(2,'0');}
-function timeAgo(t){if(!t)return'';const d=Date.now()-t,m=Math.floor(d/60000);return m<1?'Just now':m<60?m+'m ago':Math.floor(m/60)<24?Math.floor(m/60)+'h ago':Math.floor(m/86400)+'d ago';}
-function esc(t){const d=document.createElement('div');d.textContent=t;return.innerHTML;}
+async function sendAction(url){
+  try{
+    await fetch(url,{method:'POST'});
+    refreshList();
+  }catch(e){}
+}
 
-// Add spinner styles dynamically
-document.head.insertAdjacentHTML('beforeend','<style>.spinner{display:inline-block;width:20px;height:20px;border:2px solid rgba(255,255,255,.3);border-top-color:var(--primary);border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}</style>');
+async function clearCompleted(){
+  try{
+    await fetch('/api/clear',{method:'DELETE'});
+    refreshList();
+  }catch(e){}
+}
+
+// ========== UTILITY FUNCTIONS ==========
+
+async function api(endpoint,body){
+  const response=await fetch(endpoint,{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  return response.json();
+}
+
+function showLoading(show,text){
+  document.getElementById('loadingState').style.display=show?'block':'none';
+  if(text)document.getElementById('loadingText').textContent=text;
+}
+
+function showError(m){
+  document.getElementById('errorMsg').textContent=m;
+  document.getElementById('errorMsg').classList.add('show');
+}
+
+function showSuccess(m){
+  document.getElementById('successMsg').textContent=m;
+  document.getElementById('successMsg').classList.add('show');
+}
+
+function hideMessages(){
+  document.getElementById('errorMsg').classList.remove('show');
+  document.getElementById('successMsg').classList.remove('show');
+}
+
+function formatNum(n){
+  if(!n)return'0';
+  if(n>=1000000)return(n/1000000).toFixed(1)+'M';
+  if(n>=1000)return(n/1000).toFixed(1)+'K';
+  return n.toString();
+}
+
+function fmtTime(s){
+  if(!s)return'--:--';
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  return h?h+':'+m.toString().padStart(2,'0')+':'+sec.toString().padStart(2,'0'):m+':'+sec.toString().padStart(2,'0');
+}
+
+function timeAgo(t){
+  if(!t)return'';
+  const d=Date.now()-t,m=Math.floor(d/60000);
+  return m<1?'Just now':m<60?m+'m ago':Math.floor(m/60)<24?Math.floor(m/60)+'h ago':Math.floor(m/86400)+'d ago';
+}
+
+function esc(t){
+  const d=document.createElement('div');
+  d.textContent=t;
+  return d.innerHTML;
+}
 </script>
 </body></html>`;
 }
@@ -955,57 +1569,94 @@ document.head.insertAdjacentHTML('beforeend','<style>.spinner{display:inline-blo
 
 export default {
   async fetch(request, env, ctx) {
-    if (request.method === 'OPTIONS') return corsResponse();
+    // Handle CORS preflight
+    if (request.method === 'OPTIONS') {
+      return corsResponse();
+    }
 
     const url = new URL(request.url);
     const pathname = url.pathname;
 
     try {
-      // Frontend
+      console.log(`📥 [${new Date().toISOString()}] ${request.method} ${pathname}`);
+
+      // Serve frontend
       if (pathname === '/') {
         return new Response(getFrontendHTML(), {
           headers: { 'Content-Type': 'text/html;charset=UTF-8' }
         });
       }
 
-      // Health check
+      // Health check endpoint
       if (pathname === '/api/health') {
         return jsonResponse({
           status: 'ok',
           version: CONFIG.VERSION,
           timestamp: new Date().toISOString(),
+          uptime: Math.floor((Date.now() - store.startTime) / 1000),
           stats: store.getStats()
         });
       }
 
-      // Video info
-      if (pathname === '/api/info') {
-        const { url } = await request.json();
-        if (!url) return errorResponse('URL required');
-        if (!isValidUrl(url)) return errorResponse('Invalid YouTube URL');
-        return jsonResponse({ ok: true, data: await getVideoInfo(url) });
+      // ===========================
+      // CHANNEL ENDPOINTS
+      // ===========================
+
+      // Get channel info
+      if (pathname === '/api/channel/info') {
+        const { url: channelUrl } = await request.json();
+        if (!channelUrl) return errorResponse('Channel URL is required');
+        
+        const channelInfo = extractChannelInfo(channelUrl);
+        if (!channelInfo) return errorResponse('Invalid channel URL format. Use: @handle, /c/, /channel/, or /user/');
+        
+        const info = await getChannelInfo(channelUrl);
+        return jsonResponse({ ok: true, data: info });
       }
 
-      // Available formats
-      if (pathname === '/api/formats') {
-        const { url } = await request.json();
-        if (!url) return errorResponse('URL required');
-        return jsonResponse({ ok: true, data: await getVideoFormats(url) });
+      // Get all videos from channel
+      if (pathname === '/api/channel/videos') {
+        const { channelId } = await request.json();
+        if (!channelId) return errorResponse('Channel ID is required');
+        
+        const videos = await getAllChannelVideos(channelId);
+        return jsonResponse({ 
+          ok: true, 
+          videos, 
+          count: videos.length,
+          message: `Found ${videos.length} videos`
+        });
+      }
+
+      // ===========================
+      // VIDEO ENDPOINTS
+      // ===========================
+
+      // Get video information
+      if (pathname === '/api/info') {
+        const { url: videoUrl } = await request.json();
+        if (!videoUrl) return errorResponse('URL is required');
+        if (!isValidYouTubeUrl(videoUrl)) return errorResponse('Invalid YouTube URL');
+        
+        const info = await getVideoInfo(videoUrl);
+        return jsonResponse({ ok: true, data: info });
       }
 
       // Start download (prepare/get direct URL)
       if (pathname === '/api/download') {
-        const { url, q, t, th, a, d, f, cookie } = await request.json();
-        if (!url) return errorResponse('URL required');
-        if (!isValidUrl(url)) return errorResponse('Invalid YouTube URL');
+        const { url: videoUrl, q, t, th, a, d, f, cookie } = await request.json();
+        
+        if (!videoUrl) return errorResponse('URL is required');
+        if (!isValidYouTubeUrl(videoUrl)) return errorResponse('Invalid YouTube URL');
 
-        // Check duplicates
-        if (store.list({ status: 'downloading' }).find(x => x.url === url)) {
-          return errorResponse('Already downloading', 409);
+        // Check for duplicate active downloads
+        if (store.list({ status: 'downloading' }).find(x => x.url === videoUrl)) {
+          return errorResponse('This video is already being prepared', 409);
         }
 
-        const dl = store.create(url, {
-          quality: q || CONFIG.DEFAULT_QUALITY,
+        // Create new download entry
+        const dl = store.create(videoUrl, {
+          quality: q || 'medium',
           format: f || 'mp4',
           title: t,
           thumbnail: th,
@@ -1014,70 +1665,81 @@ export default {
           cookie
         });
 
-        // Fetch metadata if not provided
+        // Fetch metadata in background if not provided
         if (!t || !th) {
           ctx.waitUntil(
-            getVideoInfo(url).then(info => {
-              store.update(dl.id, {
-                title: info.title,
-                thumbnail: info.thumbnail,
-                author: info.author,
-                duration: info.duration
-              });
-            }).catch(() => {})
+            getVideoInfo(videoUrl)
+              .then(info => {
+                store.update(dl.id, {
+                  title: info.title,
+                  thumbnail: info.thumbnail,
+                  author: info.author,
+                  duration: info.duration
+                });
+              })
+              .catch(err => console.warn('Background metadata fetch failed:', err.message))
           );
         }
 
+        console.log(`✅ Download created: ${dl.id} for ${videoUrl}`);
+
         return jsonResponse({
-          ok: true,
-          data: { id: dl.id, status: dl.status, position: store.queue.indexOf(dl.id) + 1 }
+          success: true,
+          data: {
+            id: dl.id,
+            status: dl.status,
+            position: store.queue.indexOf(dl.id) + 1
+          }
         });
       }
 
-      // Download file (stream actual video)
+      // STREAM VIDEO FILE - This is the real download!
       if (pathname.startsWith('/api/download-file/')) {
         const id = pathname.split('/').pop();
         const dl = store.get(id);
         
-        if (!dl) return errorResponse('Download not found', 404);
-        if (dl.status !== 'completed') return errorResponse('Download not ready', 400);
-        if (!dl.directUrl) return errorResponse('No download URL available', 500);
-
-        return streamVideo(dl);
+        console.log(`📥 Download file requested: ${id}`);
+        
+        return streamVideoFile(dl);
       }
 
-      // Single download status
+      // Get single download status
       if (pathname.startsWith('/api/status/')) {
         const id = pathname.split('/').pop();
         const dl = store.get(id);
-        if (!dl) return errorResponse('Not found', 404);
+        if (!dl) return errorResponse('Download not found', 404);
         return jsonResponse({ ok: true, data: dl });
       }
 
-      // Cancel/pause
+      // Cancel or pause download
       if (pathname.startsWith('/api/cancel/')) {
         const id = pathname.split('/').pop();
-        const body = request.method === 'POST' ? await request.json().catch(() => ({})) : {};
+        const body = request.method === 'POST' 
+          ? await request.json().catch(() => ({})) 
+          : {};
         
+        // Check for pause/toggle action
         if (body.action === 'pause' || body.action === 'toggle') {
-          const r = store.togglePause(id);
-          if (!r.ok) return errorResponse(r.reason, 400);
-          return jsonResponse({ ok: true, data: r.download });
+          const result = store.togglePause(id);
+          if (!result.ok) return errorResponse(result.reason, 400);
+          return jsonResponse({ ok: true, data: result.download });
         }
 
-        const r = store.cancel(id);
-        if (!r.ok) return errorResponse(r.reason, 400);
-        return jsonResponse({ ok: true, data: r.download });
+        // Default: cancel
+        const result = store.cancel(id);
+        if (!result.ok) return errorResponse(result.reason, 400);
+        return jsonResponse({ ok: true, data: result.download });
       }
 
-      // Retry
+      // Retry failed download
       if (pathname.startsWith('/api/retry/')) {
-        const r = store.retry(pathname.split('/').pop());
-        if (!r.ok) return errorResponse(r.reason, 400);
-        return jsonResponse({ ok: true, data: r.download });
+        const id = pathname.split('/').pop();
+        const result = store.retry(id);
+        if (!result.ok) return errorResponse(result.reason, 400);
+        return jsonResponse({ ok: true, data: result.download });
       }
 
-      // List all
+      // List all downloads
       if (pathname === '/api/list') {
         const downloads = store.list();
         const stats = store.getStats();
@@ -1085,21 +1747,29 @@ export default {
           ok: true,
           data: downloads,
           stats: stats.downloads,
-          info: { version: CONFIG.VERSION, maxConcurrent: CONFIG.MAX_CONCURRENT }
+          info: {
+            version: CONFIG.VERSION,
+            maxConcurrent: CONFIG.MAX_CONCURRENT
+          }
         });
       }
 
-      // Clear completed
+      // Clear completed downloads
       if (pathname === '/api/clear') {
         const cleared = store.clearCompleted();
-        return jsonResponse({ ok: true, cleared, message: `Cleared ${cleared} item(s)` });
+        return jsonResponse({
+          ok: true,
+          cleared,
+          message: `Cleared ${cleared} item(s)`
+        });
       }
 
+      // 404 for unknown routes
       return errorResponse('Not Found', 404);
 
     } catch (error) {
-      console.error('Worker error:', error);
-      return errorResponse('Internal Server Error: ' + error.message, 500);
+      console.error('❌ Worker error:', error);
+      return errorResponse(`Internal Server Error: ${error.message}`, 500);
     }
   }
 };
