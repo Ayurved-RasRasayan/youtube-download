@@ -1268,13 +1268,13 @@ async function fetchChannel(){
     showChannelInfo(channel);
     
     // Step 2: Get all videos
-    showLoading(true,\`Loading \${channel.videoCount||'all'} videos...\`);
+    showLoading(true,'Loading '+(channel.videoCount||'all')+' videos...');
     const videosRes=await api('/api/channel/videos',{channelId:channel.id});
     if(!videosRes.ok)throw new Error(videosRes.error||'Failed to fetch videos');
     
     channelVideos=videosRes.videos||[];
     showVideos(channelVideos);
-    showSuccess(\`Loaded \${channelVideos.length} videos from \${channel.name}\`);
+    showSuccess('Loaded '+channelVideos.length+' videos from '+channel.name);
     document.getElementById('statsBar').style.display='grid';
     
   }catch(e){
@@ -1401,7 +1401,7 @@ async function downloadSelected(){
     }
   }
   
-  showSuccess(\`Queued \${success} videos for download\${failed>0?' ('+failed+' failed)':''}\`);
+  showSuccess('Queued '+success+' videos for download'+(failed>0?' ('+failed+' failed)':''));
   btn.disabled=false;
   btn.innerHTML='⬇️ Download Selected';
   
