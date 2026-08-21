@@ -1241,7 +1241,7 @@ app.post('/api/video/info', async (req, res) => {
 // Start download endpoint
 app.post('/api/download/start', async (req, res) => {
     try {
-        const { url, format, quality } = req.body;
+        const { url, format, quality, title } = req.body;  // ⭐ Added title!
         
         if (!url) {
             return res.status(400).json({ error: 'Video URL required' });
@@ -1254,6 +1254,7 @@ app.post('/api/download/start', async (req, res) => {
         const download = downloadManager.add({
             id: downloadId,
             url: url,
+            title: title || null,  // ⭐ ADD TITLE FOR RENAME!
             filename: filename,
             outputPath: outputPath,
             status: 'downloading',
@@ -1309,7 +1310,8 @@ app.post('/api/download', async (req, res) => {
             channelId,     // Parent channel ID
             format,        // Video format preference
             quality,        // Quality preference
-            filename       // Custom filename
+            filename,       // Custom filename
+            title           // ⭐ VIDEO TITLE (for rename feature!)
         } = req.body;
         
         // Determine video URL
@@ -1380,6 +1382,7 @@ app.post('/api/download', async (req, res) => {
             url: videoUrl,
             videoId: videoId,
             channelId: channelId,
+            title: title || null,  // ⭐ ADD TITLE FOR RENAME!
             filename: outputFilename,
             outputPath: outputPath,
             format: format || 'best',
@@ -1764,14 +1767,19 @@ app.post('/api/download/batch', async (req, res) => {
 
         const downloads = [];
 
-        for (const url of urls) {
+        for (const item of urls) {
+            // ⭐ Support both string URLs and objects with url+title
+            const videoUrl = typeof item === 'string' ? item : item.url;
+            const videoTitle = typeof item === 'object' ? item.title || item.name : null;
+            
             const downloadId = uuidv4();
             const filename = `video_${downloadId}.mp4`;
             const outputPath = path.join(DOWNLOADS_DIR, filename);
 
             const download = downloadManager.add({
                 id: downloadId,
-                url: url,
+                url: videoUrl,
+                title: videoTitle,  // ⭐ ADD TITLE FOR RENAME!
                 filename: filename,
                 outputPath: outputPath,
                 status: 'queued',
