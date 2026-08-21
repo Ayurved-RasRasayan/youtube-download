@@ -65,6 +65,7 @@ class DownloadStore {
     this.downloads = new Map();
     this.active = 0;
     this.queue = [];
+    this.startTime = Date.now(); // Track worker start time
     this.stats = {
       totalDownloads: 0,
       completedDownloads: 0,
@@ -402,9 +403,10 @@ class DownloadStore {
    */
   getStats() {
     const all = this.list();
+    const now = Date.now();
     return {
       version: CONFIG.VERSION,
-      uptime: process.uptime ? process.uptime() : 0,
+      uptime: Math.floor((now - (this.startTime || now)) / 1000),
       downloads: {
         total: all.length,
         active: this.active,
